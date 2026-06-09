@@ -1,0 +1,11 @@
+INFO:     127.0.0.1:60213 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49186 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54952 - "GET /reports/entrevista HTTP/1.1" 200 OK
+INFO:     127.0.0.1:64403 - "GET /reports/projetos HTTP/1.1" 200 OK
+INFO:     127.0.0.1:59457 - "GET /reports/mercado HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57305 - "GET /reports/experiencia HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57305 - "GET /reports/stack HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51601 - "GET /reports/materiais HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51601 - "GET /reports/trajetoria HTTP/1.1" 200 OK
+INFO:     127.0.0.1:51601 - "GET /reports/entrevista HTTP/1.1" 200 OK
+INFO:     127.0.0.1:61164 - "GET /materials/extract-gabriel HTTP/1.1" 200 OK

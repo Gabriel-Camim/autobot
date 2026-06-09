@@ -1,0 +1,15 @@
+INFO:     Started server process [30752]
+INFO:     Waiting for application startup.
+INFO:     Application startup complete.
+INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)
+{"request_id": "c739349e-0dd8-486f-a5c3-4b9b3ab73367", "method": "GET", "path": "/health", "status_code": 200, "latency_ms": 4.92}
+{"request_id": "139dc26d-2835-4ab7-af2b-61ff08b6ca1f", "method": "GET", "path": "/health", "status_code": 200, "latency_ms": 4.41}
+{"request_id": "201c0630-1541-4ec2-a2c3-827257d29297", "method": "GET", "path": "/reports/entrevista", "status_code": 200, "latency_ms": 4.91}
+{"request_id": "64dc84de-b871-42e2-8f1f-b9e808a42221", "method": "GET", "path": "/reports/projetos", "status_code": 200, "latency_ms": 3.85}
+{"request_id": "34003500-6842-43ef-88f8-64383d265045", "method": "GET", "path": "/reports/mercado", "status_code": 200, "latency_ms": 3.69}
+{"request_id": "5fe7b5e4-2a7d-4d8b-875d-9a4e25917a9b", "method": "GET", "path": "/reports/experiencia", "status_code": 200, "latency_ms": 3.95}
+{"request_id": "129840f4-9e77-4684-be74-f2f509bab7ec", "method": "GET", "path": "/reports/stack", "status_code": 200, "latency_ms": 3.57}
+{"request_id": "15c34ebc-2429-4c53-b403-ed04341e23ea", "method": "GET", "path": "/reports/materiais", "status_code": 200, "latency_ms": 3.44}
+{"request_id": "b1793175-aa9e-43ae-91d4-c9056c2acbcd", "method": "GET", "path": "/reports/trajetoria", "status_code": 200, "latency_ms": 5.46}
+{"request_id": "469a8e2d-715e-48fb-9860-0b3558247fdc", "method": "GET", "path": "/reports/entrevista", "status_code": 200, "latency_ms": 3.25}
+{"request_id": "edcc06f6-d417-4122-8301-8d96b30860ff", "method": "GET", "path": "/materials/extract-gabriel", "status_code": 200, "latency_ms": 6.5}

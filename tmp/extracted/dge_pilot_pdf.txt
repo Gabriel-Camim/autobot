@@ -1,0 +1,933 @@
+
+
+--- PAGE 1 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 1
+DGE 2.0
+Do piloto à inteligência operacional
+auditável da Galpão
+Como dados reais da operação
+passam a alimentar KPIs, projeções,
+gargalos, reforecast e decisões de
+crescimento.
+
+
+--- PAGE 2 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 2
+A tese executiva
+LEITURA EM 2 MINUTOS
+A DGE 2.0 não é um sistema maior só porque ganhou mais módulos. Ela mudou de natureza. O piloto mostrava uma visão
+de crescimento digital; a versão atual começa a estruturar uma camada de inteligência operacional auditável. Isso significa
+que a DGE não serve apenas para cadastrar produtos, mostrar dashboard ou automatizar tarefas. Ela registra fatos da
+operação, transforma esses fatos em indicadores, compara realidade contra projeção, preserva memória histórica e cria
+base para revisar cenários com governança.
+Para alguém de negócio, a diferença é simples: um sistema comum responde “o que aconteceu?”. A DGE quer responder
+“o que aconteceu, de onde veio esse número, qual fórmula ele afeta, qual projeção ficou pressionada, qual gargalo
+apareceu, qual decisão precisa ser tomada e qual versão do plano deve ser preservada?”. Esse é o diferencial. O dado
+não fica parado. Ele vira leitura de crescimento, risco, margem, estoque, canal e implantação.
+A palavra auditável é importante. Na DGE, uma projeção não deve ser alterada porque alguém sentiu que o cenário
+mudou. Um número real entra por uma camada controlada, vira KPI, é associado a uma fonte, pode ser preservado em
+snapshot, pode gerar variância contra a projeção anterior e pode abrir um caminho de reforecast. Reforecast, aqui,
+significa nova versão governada da projeção, não substituição silenciosa da história.
+Isso permite que a Galpão pense a operação digital como uma estrutura viva: ecommerce próprio, marketplaces, Bling,
+estoque, hubs, CDD, logística, BI, exceções e futuras integrações deixam de ser peças isoladas. A DGE passa a ser a
+memória operacional que conecta essas peças e transforma o que a empresa observa no dia a dia em inteligência para
+decidir crescimento.
+- Dado real entra por Data Intake, ERP, Commerce, Bling ou BI.
+- O backend valida a origem, preserva histórico e calcula impacto.
+- KPI Intelligence compara observado contra projetado.
+- Projection Impact mostra o que pode ser afetado, sem alterar a versão oficial.
+- Official Reforecast só nasce com evidência, lineage e aprovação.
+A frase que precisa ficar
+A DGE transforma dados reais da operação em inteligência de crescimento: KPIs, fórmulas, snapshots, variâncias, gargalos,
+impacto projetivo e reforecast governado, sem apagar histórico e sem permitir que automação ou IA decidam sozinhas.
+
+
+--- PAGE 3 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 3
+Do piloto ao backbone operacional
+O QUE MUDOU EM 27 DIAS
+O piloto anterior era uma demonstração de tese: a Galpão poderia usar dados, projeções e leitura de mercado para
+sustentar uma estratégia de canal próprio. Esse piloto tinha valor porque mostrava direção. Mas ele ainda era mais uma
+apresentação de potencial do que uma estrutura operacional. A evolução atual é diferente: a DGE começou a ganhar a
+parte invisível que torna a tese executável.
+Essa parte invisível é o backend, explicado aqui como backbone operacional. Backend é o lado do sistema que o usuário
+não vê diretamente: regras, validações, cálculos, estados, integrações, auditoria e permissões. Backbone é a espinha
+dorsal: o conjunto de módulos que sustenta a operação antes da tela final existir. O backend atual ainda está em
+construção, mas já avançou para além de um protótipo visual.
+Hoje a DGE já organiza conceitos que um ecommerce isolado normalmente não resolve bem: produto canônico, SKU,
+listas de preço por canal, cupons, compras, estoque por location física, hubs, CDD, marketplace como canal e não
+depósito, Bling como fonte auxiliar e não dono da verdade, Data Intake governado, BI datasets, Exception Hub,
+Auth/Tenant, reforecast oficial e registros de dívida técnica.
+Isso não significa que tudo está pronto para produção real. Pelo contrário: um dos sinais de maturidade é que a DGE
+passou a registrar lacunas. Há gaps de cadastro, gaps de location sem actor, gaps de fulfillment policy, gaps de preço por
+canal e blocos futuros de fiscal, distribuição e Service Desk. O documento não vende um sistema perfeito. Ele mostra uma
+arquitetura em construção que já sabe diferenciar capacidade ativa, capacidade parcial, capacidade planejada e bloqueio
+real.
+Antes do piloto
+Agora na DGE 2.0
+Protótipo de visão comercial
+Backbone operacional em construção, com contratos,
+smokes e checks
+Projeções iniciais
+Projeção com snapshots, lineage, variância e reforecast
+governado
+Tese de canal próprio
+Camada que conecta canal próprio, marketplace, ERP, Bling,
+BI e operação
+Leitura estratégica
+Cockpit, Exception Hub, registries, auth e Roadmap Debt
+Register
+Demonstração visual
+Base técnica que prepara frontend futuro sem esconder regra
+de negócio
+
+
+--- PAGE 4 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 4
+O que a DGE é, e o que ela não é
+ENQUADRAMENTO CORRETO
+A DGE é uma camada de inteligência operacional auditável. Camada significa que ela fica acima de sistemas e rotinas
+isoladas, organizando a leitura da operação. Inteligência operacional significa transformar fatos do dia a dia em leitura de
+decisão: crescimento, margem, estoque, gargalo, canal, dependência de marketplace, payback e necessidade de revisão.
+Auditável significa que cada conclusão relevante precisa ter origem, rastro e versão.
+Essa definição é necessária porque a DGE pode ser confundida com coisas menores. Ela usa conceitos de ERP, BI,
+automação e IA, mas não se resume a nenhum deles. ERP cadastra e controla operação; BI organiza leitura analítica;
+automação executa tarefas; IA pode recomendar. A DGE junta esses elementos em uma lógica de decisão governada:
+dado entra, vira KPI, aciona fórmula, gera variância, indica gargalo e pode sustentar reforecast.
+Também é importante não vender a DGE como uma IA mágica. A IA futura deve ser uma camada de recomendação com
+contexto rastreável. Ela pode ajudar a explicar causa provável, priorizar exceções ou sugerir playbooks, mas não deve
+aprovar estoque, compra, cupom, cobrança, reforecast ou ação fiscal sozinha. O centro da DGE é governança de dados e
+decisão, não autonomia irresponsável.
+Redução comum
+Leitura correta
+É só um site
+O site é uma superfície futura; a DGE é a base de dados,
+decisão, projeção e operação
+É só ERP
+O ERP guarda cadastros e estoque; a DGE cruza isso com
+KPIs, projeções e reforecast
+É só dashboard
+Dashboard mostra; a DGE valida, calcula, compara, audita e
+explica
+É só automação
+Automação executa; a DGE define contrato, estado,
+permissão, exceção e rastro
+É só IA
+IA futura recomenda com contexto; a decisão final segue
+governança
+
+
+--- PAGE 5 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 5
+A cadeia real da inteligência
+COMO O DADO VIRA DECISÃO
+A cadeia inteligente da DGE começa antes de qualquer dashboard. Primeiro existe um fato operacional: uma venda, um
+estoque contado, um pedido importado, um frete observado, uma comissão de marketplace, uma campanha, um custo ou
+um gargalo. Esse fato não deve cair em uma planilha solta. Ele entra por uma camada governada, com tipo, origem, data,
+status e destino.
+Depois, o fato pode virar KPI. KPI é um indicador que resume uma parte da operação: pedidos, GMV, margem, ticket
+médio, frete, conversão, estoque, ruptura, dependência de marketplace ou payback. A DGE não trata todo número como
+verdade igual. Ela registra qualidade, origem, período e confiabilidade. Um KPI manual auditado e um KPI vindo de
+integração futura podem ter pesos e status diferentes.
+Em seguida, KPIs alimentam fórmulas. Fórmula é uma regra de cálculo registrada. Um KPI de frete pode afetar margem.
+Um KPI de pedidos pode afetar receita projetada. Uma diferença de conversão pode afetar a curva de migração para canal
+próprio. A DGE não precisa adivinhar; ela usa variáveis e fórmulas modeladas.
+Quando há diferença entre o que foi projetado e o que foi observado, nasce a variância. Variância não é automaticamente
+erro. Pode ser ruído, atraso, sazonalidade, mudança de mix, ruptura de estoque ou gargalo real. Por isso a DGE precisa
+de snapshots e lineage: a memória do que foi projetado antes, do que foi observado agora e do caminho que levou a uma
+revisão.
+Sem mágica e sem atalho
+A DGE não muda projeção oficial por impulso. Ela registra evidência, calcula impacto, preserva a versão anterior e só permite
+reforecast oficial por fluxo governado.
+
+
+--- PAGE 6 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 6
+Data Intake e KPI Intelligence
+O CORAÇÃO DA CAMADA INTELIGENTE
+Data Intake é a porta de entrada governada de dados. O termo pode parecer técnico, mas o conceito é simples: em vez de
+cada número importante ficar espalhado em WhatsApp, planilha, relatório isolado ou memória de alguém, a DGE cria
+coletores específicos. Um collector é um ponto de coleta com finalidade definida: qual dado entra, com qual frequência,
+quem pode enviar, quem revisa, para onde ele vai e que impacto pode ter.
+Isso é especialmente importante enquanto integrações completas ainda não existem. Antes de API direta com todos os
+sistemas, a DGE pode receber números por coleta manual ou assistida sem perder controle. A diferença entre Data Intake
+e formulário genérico é a governança: cada campo sabe para que serve, cada submissão tem status, cada revisão pode
+ser auditada e cada envio pode despachar para KPI, BI, projeção, exceção ou reconciliação.
+KPI Intelligence é a camada que transforma essas entradas em leitura. Ela coleta indicadores, agrega períodos, mede
+qualidade, compara observado contra projetado e detecta variâncias. Se Data Intake é a porta de entrada, KPI Intelligence
+é a primeira inteligência formal: ela diz quais números são confiáveis, quais estão atrasados, quais desviaram do plano e
+quais podem pressionar fórmulas.
+A DGE já trata KPI Intelligence como uma peça central porque ela evita a armadilha do dashboard bonito. Um dashboard
+comum pode mostrar que a margem caiu. A DGE precisa ir além: qual margem caiu, em qual canal, com qual dado de
+origem, contra qual projeção, com qual variação, em qual período e com qual possível gargalo. Esse caminho transforma
+leitura em decisão.
+Camada
+Função na DGE
+Collector
+Coleta um número/fato com frequência, destino e responsável
+definidos
+Submission
+Registro de envio de dado, com status e auditoria
+KPI
+Indicador calculado a partir de dados governados
+Quality score
+Leitura de qualidade/confiabilidade do dado
+Variance
+Diferença entre observado e projetado
+Bottleneck signal
+Sinal de gargalo operacional, financeiro ou comercial
+
+
+--- PAGE 7 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 7
+Fórmulas, variáveis, snapshots e lineage
+A MEMÓRIA CALCULÁVEL DA DGE
+O ponto mais sensível da camada inteligente é que números reais não podem ser tratados como opinião. Eles precisam
+entrar em fórmulas predefinidas. Fórmula, no contexto da DGE, é uma regra de cálculo registrada: quais variáveis usa, que
+resultado produz, qual versão está valendo e que parte da projeção ela afeta.
+Exemplos ajudam. Se pedidos reais entram abaixo da projeção, a fórmula de receita pode ser afetada. Se o frete real
+sobe, a fórmula de margem pode mudar. Se a conversão observada fica abaixo da premissa, a curva de crescimento do
+canal próprio pode precisar de revisão. Se o custo ou comissão por canal muda, o payback também pode mudar. Nada
+disso exige que a DGE invente uma regra nova na hora; exige que as variáveis estejam modeladas e que a fórmula saiba
+como reagir.
+Snapshot é a fotografia auditável desse momento. Ele preserva uma versão do dado, da projeção ou da leitura
+operacional. Lineage é a árvore genealógica: de onde veio o número, qual versão usou, qual cálculo gerou e qual revisão
+nasceu depois. Sem snapshot e lineage, uma revisão de projeção vira confusão. Com snapshot e lineage, a DGE
+consegue explicar por que uma leitura mudou sem apagar o plano anterior.
+Essa é uma diferença crítica para a Galpão. Em uma planilha tradicional, alguém pode alterar uma célula e o histórico se
+perde. Na DGE, o objetivo é preservar o baseline. A projeção inicial continua existindo. Se a realidade mostrar outra coisa,
+a DGE cria uma nova versão com rastro, comparação e justificativa. Isso permite comparar plano, execução e revisão com
+maturidade.
+Por que isso importa
+A DGE não apaga a projeção anterior. Ela cria memória operacional: versão antiga, número observado, variância, evidência,
+justificativa e nova versão quando aprovada.
+
+
+--- PAGE 8 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 8
+Da variância ao reforecast governado
+COMO A DGE REVISA PROJEÇÕES SEM PERDER CONTROLE
+A projeção inicial é o plano. A realidade observada é o que a operação registrou. A diferença entre os dois é a variância.
+Mas a DGE não deve tratar toda variância como motivo para mudar o plano. Uma variação pontual pode ser ruído; uma
+variação persistente pode indicar mudança real; uma variação concentrada em um canal pode revelar gargalo; uma
+variação de margem pode expor custo ou frete acima do esperado.
+Projection Impact Analyzer entra como uma camada de preview. Ele não altera a projeção oficial. Ele pergunta quais
+fórmulas, famílias de projeção e indicadores podem estar sendo pressionados pelo que foi observado. Isso é importante
+porque mantém a DGE conservadora: ela mostra impacto possível antes de mudar qualquer versão oficial.
+Adaptive Projection é ainda mais cuidadosa. Ela pode sugerir ajustes com base em variância persistente, mas sugestão
+não é decisão. Uma sugestão pode ser aprovada, rejeitada, expirada ou usada em simulação. A DGE não deve se
+comportar como piloto automático financeiro. Ela deve produzir inteligência explicável para decisão humana.
+Forecast Reconciliation interpreta a diferença entre previsão e realidade. Ela cruza projeção oficial, KPIs auditados,
+variância, gargalos, traces e histórico para dizer se existe um caso de reforecast. Official Reforecast é a etapa final: uma
+nova versão oficial da projeção, com evidência, aprovação e lineage. O baseline anterior continua preservado.
+Etapa
+O que faz
+O que não faz
+Projection Impact
+Mostra fórmulas e projeções
+possivelmente afetadas
+Não altera projeção oficial
+Adaptive Projection
+Sugere ajuste conservador quando há
+variância persistente
+Não aprova reforecast sozinha
+Forecast Reconciliation
+Interpreta projetado vs realizado e
+organiza o caso
+Não apaga baseline
+Official Reforecast
+Cria nova versão aprovada com
+evidência e lineage
+Não nasce sem governança
+
+
+--- PAGE 9 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 9
+Cenários recalculáveis, do jeito correto
+INVESTIMENTO, PAYBACK, MIGRAÇÃO E PROJEÇÃO
+Cenários recalculáveis não significam que a DGE muda automaticamente o roadmap técnico ou a ordem de
+desenvolvimento. A leitura correta é mais específica: números reais, quando entram como variáveis em fórmulas
+existentes, podem recalcular cenários de investimento, payback, operação, migração de canal e retorno esperado.
+Se a margem real por pedido for diferente da margem projetada, a curva de payback pode mudar. Se o frete real sobe
+mais que a premissa original, o retorno do canal próprio pode ficar mais longo. Se a conversão real do ecommerce fica
+abaixo da premissa, a projeção de crescimento precisa ser revisada. Se pedidos por marketplace mostram dependência
+alta, a migração para canal próprio pode ser comparada em novos cenários financeiros desde que existam fórmulas para
+isso.
+A DGE atual não deve afirmar lógicas que não foram modeladas. Por exemplo: não dizer que saneamento de dados
+recalcula automaticamente prazo de implantação se isso não existe como variável/fórmula atual. O que existe como tese
+implementada é a cadeia Data Intake, KPI, fórmula, snapshot, variância, projection impact e reforecast governado.
+Essa precisão protege a credibilidade do relatório. O documento não precisa exagerar. A força da DGE está justamente
+em não prometer magia: ela mostra quais números entram, quais cálculos podem ser afetados e que tipo de decisão pode
+nascer depois de validação.
+Definição para o relatório
+Cenário recalculável é a capacidade de revisar projeções financeiras, payback, operação e migração de canal com base em
+números reais que entram nas fórmulas registradas da DGE.
+
+
+--- PAGE 10 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 10
+Simulação 1: pedido Mercado Livre
+MARKETPLACE COMO CANAL, NÃO ESTOQUE
+Imagine um pedido vindo do Mercado Livre. Em muitos sistemas, o risco é tratar o marketplace como se fosse um depósito
+ou uma origem de estoque. A DGE corrige essa ontologia: Mercado Livre e Shopee são canais/provedores de venda, não
+hubs físicos. Eles geram demanda. O estoque continua pertencendo a uma location física: CDD, loja, hub, ecommerce
+stock ou outra unidade configurada.
+O fluxo correto é: o pedido entra; a DGE identifica import_provider e sales_channel; verifica external_order_id para
+dedupe; valida SKU/listing; reconcilia Bling se o pedido veio por lá; verifica política de fulfillment; resolve CDD ou pool; cria
+reserva apenas em location física válida; e só baixa estoque quando os gates mínimos permitirem. Gate, aqui, significa
+uma trava operacional: pagamento, fiscal, fulfillment, mapping, allocation e status precisam estar coerentes.
+Essa simulação mostra por que a DGE não é só integração. Uma integração comum importaria o pedido e talvez baixasse
+estoque. A DGE precisa perguntar se esse pedido já apareceu por outra fonte, se o SKU existe no catálogo canônico, se o
+canal tem preço, se o CDD tem estoque, se o estoque observado do Bling conflita com a DGE e se a baixa deve acontecer
+agora ou ficar em reserva.
+O impacto inteligente vem depois: esse pedido pode alimentar GMV, margem, dependência de marketplace, comissão,
+frete, ruptura, velocidade de venda e projeção do canal próprio. Se o marketplace cresce mas a margem cai, a DGE pode
+mostrar a pressão no cenário financeiro. Se o canal próprio performa abaixo do esperado, a DGE pode comparar projeção
+e realidade. A venda operacional vira insumo de inteligência.
+- Marketplace gera demanda; hub físico executa estoque.
+- Bling pode ser ponte auxiliar, mas não vira verdade absoluta.
+- Pedido duplicado vira reconciliação, não venda duplicada.
+- Ambiguidade vira exceção auditável, não correção silenciosa.
+
+
+--- PAGE 11 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 11
+Simulação 2: entrada de fornecedor e distribuição
+COMO O ESTOQUE NASCE NA OPERAÇÃO
+Uma operação real não começa só na venda. Ela começa quando produto entra. A DGE precisa saber como o estoque
+nasce: fornecedor, compra, nota, item recebido, custo, quantidade, destino físico e movimento de estoque. Por isso o
+roadmap registrou a necessidade de Supplier Inbound Distribution: quando uma nota entra, cada item precisa poder ser
+distribuído entre CDDs, hubs, lojas ou unidades franqueadas.
+Exemplo: uma nota traz 100 unidades de um SKU. A operação pode decidir que 40 vão para o CDD, 20 para uma loja
+própria, 20 para um hub próprio e 20 para uma unidade franqueada. Essa distribuição não é apenas logística. Ela precisa
+carregar custo, preço de referência, possível impacto fiscal, destino, ownership, movimento de estoque e, futuramente,
+pedido de documento fiscal quando aplicável.
+A correção importante sobre CDD é que o estoque do CDD não é a soma virtual dos hubs. O CDD tem estoque físico
+próprio. Hubs têm estoques físicos próprios. O pool calcula capacidade de reposição para o CDD, não transforma estoque
+de hub em estoque pronto para expedir. Isso muda a projeção operacional: pronto para expedir é diferente de possível
+reposição.
+Essa distinção também alimenta inteligência. Se o CDD tem baixo estoque pronto, mas hubs têm capacidade de
+reposição, a DGE pode separar ready_to_ship_qty de replenishable_qty. Se uma venda online exige expedição pelo CDD,
+a baixa deve sair do CDD, não diretamente da loja. Se o CDD precisa ser abastecido, nasce plano de transferência. Se o
+fluxo cruza fronteira fiscal ou franquia, entra a camada contábil/fiscal futura.
+Conceito
+Leitura correta
+CDD own stock
+Estoque físico já disponível no CDD
+Hub stock
+Estoque físico no hub, loja ou franquia
+Replenishable capacity
+Quantidade que pode abastecer o CDD respeitando política
+Online publishable stock
+Quantidade publicável conforme política, não soma
+automática
+Inbound distribution
+Distribuição item a item de compra/nota para destinos físicos
+
+
+--- PAGE 12 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 12
+ERP operacional como base, não como teto
+CATÁLOGO, PREÇO, COMPRA, ESTOQUE E CANAIS
+O ERP operacional da DGE é a base de cadastro e estoque. Ele inclui produtos, SKUs, categorias, fornecedores, listas de
+preço, cupons, compras, locations, hubs, CDD e políticas de publicação por canal. Esse ERP é necessário porque a
+inteligência não pode existir sobre dados sem estrutura. Mas ele não é o teto da DGE; ele é a base transacional para a
+camada inteligente.
+O catálogo canônico nasce manualmente dentro do ERP, não a partir do Bling. Isso evita que produto observado em
+integração vire produto oficial sem revisão. Produto precisa ter nome, categoria, mídia, dimensões de pacote, fornecedor,
+status, preço por lista/canal e regras de publicação. Para motopeças, a arquitetura também precisa suportar
+compatibilidade com motos, modelos, anos e versões, porque isso afeta busca, ecommerce e atendimento.
+As listas de preço são por canal ou location: ecommerce, Shopee, Mercado Livre, loja 1, loja 2, franquia, atacado ou outra
+política. O preço do SKU específico deve constar na lista que o canal usa. Promoções e cupons devem aplicar regras
+sobre preço efetivo, principalmente no ecommerce, sem bagunçar o preço base. Isso separa preço canônico, desconto,
+campanha e margem.
+Compras e fornecedores fecham a base de estoque. A DGE precisa registrar fornecedor, pedido de compra, recebimento,
+custo, divergência e entrada de estoque por movimento. No futuro, XML/NF-e de compra pode virar import assistido, mas a
+primeira verdade é operacional: compra recebida precisa virar estoque em uma location física válida, com custo e rastro.
+- Produto/SKU canônico é cadastrado no ERP, não criado automaticamente pelo Bling.
+- Preço vem de lista de preço por canal/location, não de campo solto no produto.
+- Promoção e cupom aplicam regra sobre preço efetivo.
+- Entrada de compra deve gerar movimento de estoque com custo e destino.
+- Catálogo incompleto vira gap de publicação, não improviso operacional.
+
+
+--- PAGE 13 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 13
+Bling, integrações e reconciliação
+FONTE AUXILIAR GOVERNADA
+Bling é importante porque pode trazer pedidos, notas, referências de produto e estoque observado. Mas a arquitetura
+correta não transforma Bling em dono da verdade. A DGE continua source of truth de catálogo, preço ecommerce, estoque
+canônico e workflow. Bling entra como fonte auxiliar governada.
+A lógica de importação segura tem várias travas: fetch preview, payload hash, mapping governance, dedupe, reconciliation
+e import assistido. Fetch preview permite olhar dados reais ou exportados sem criar pedido, produto ou estoque canônico.
+Payload hash garante que o import final usa o mesmo conteúdo revisado no preview. Mapping governance conecta
+depósitos, produtos, SKUs, lojas e canais do Bling às entidades canônicas da DGE.
+Reconciliação evita duplicidade e baixa errada. Se o mesmo pedido aparece via Bling e futuramente via API do
+marketplace, a DGE deve reconhecer que é o mesmo evento comercial visto por duas fontes. Se Bling mostra estoque
+diferente, isso vira evidência de reconciliação, não overwrite de erp_inventory_balances. Se Bling traz SKU desconhecido,
+isso vira mapping candidate ou exceção, não produto oficial criado automaticamente.
+Essa camada é uma das diferenças entre integração improvisada e operação governada. Importar dado é fácil; impedir
+que dado externo destrua a verdade canônica é a parte séria.
+Dado do Bling
+Tratamento correto na DGE
+Produto/SKU observado
+Sugestão de mapping ou exceção, nunca criação automática
+de produto canônico
+Pedido
+Commerce order via dedupe/reconciliation, preservando
+import_provider e sales_channel
+Estoque observado
+Registro de evidência/reconciliação, nunca overwrite do saldo
+canônico
+Nota/status fiscal
+Evidência fiscal vinculada ao pedido, não baixa automática
+sozinha
+Depósito/loja
+Exige mapping para location física ou canal
+
+
+--- PAGE 14 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 14
+Cockpit, BI e Exception Hub
+DA LEITURA À AÇÃO
+BI é a camada de leitura analítica. Dataset é uma tabela preparada para análise, com nomes e significados estáveis. A
+camada BI da DGE prepara datasets e visões semânticas que futuramente podem ser consumidas por ferramentas como
+Superset, Power BI ou dashboards próprios. A frase é proposital: Power BI é destino possível futuro, não integração pronta
+nesta fase.
+Cockpit é a mesa operacional. Ele deve mostrar saúde, filas, prioridades, dados atrasados, automações pendentes,
+exceções, impacto projetivo e próximos passos. Command Center é a leitura consolidada: a operação em estado de
+decisão. A tela futura não deve inventar regra; ela deve renderizar o que o backend calculou, filtrou e autorizou.
+Exception Hub é a central de exceções. Ele registra problemas que impedem a operação de seguir com segurança: SKU
+sem mapping, hub sem responsável, canal sem preço, CDD sem policy, pedido duplicado, Bling divergente, estoque
+observado conflitante ou reforecast sem evidência suficiente. A função do Exception Hub não é só mostrar erro. É ligar
+erro a impacto, entidade, responsável, status e futuro Service Desk.
+Essa tríade fecha a ponte entre inteligência e execução: BI mostra leitura analítica; Cockpit organiza decisão operacional;
+Exception Hub transforma inconsistência em item resolvível. Sem essa ponte, a DGE seria um bom painel. Com essa
+ponte, ela começa a virar command center.
+Importante para apresentação
+A DGE não promete Power BI pronto. Ela prepara datasets e visões semânticas que podem alimentar Superset, Power BI ou
+dashboards próprios depois.
+
+
+--- PAGE 15 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 15
+Governança, auth, actors e permissões
+QUEM PODE VER, AGIR E APROVAR
+Um sistema operacional sério precisa saber quem está agindo. Tenant é a empresa ou unidade lógica atendida. Actor é a
+pessoa ou sistema que executa uma ação. Role é a função operacional desse actor, como operador, gestor, admin ou
+system_integration. Auth é a regra que define quem pode ver, agir ou aprovar.
+Na DGE, essa camada foi endurecida porque o futuro frontend não pode ser o guardião real da segurança. Tela pode
+esconder botão, mas a regra precisa estar no backend. Se um usuário não tem role ou scope, a ação deve ser bloqueada
+pelo servidor. Se system_integration pode enviar webhook ou criar preview, isso não significa que pode aprovar import
+final, mapping final ou reforecast oficial.
+Essa governança conversa diretamente com a inteligência. Um reforecast só vale se houver evidência e aprovação. Um
+mapping Bling só vale se for revisado por role permitido. Uma baixa de estoque só vale se os gates passaram. Uma
+exceção resolvida precisa preservar quem resolveu e por quê. A DGE não quer apenas automatizar; ela quer criar
+responsabilidade operacional.
+Termo
+Explicação prática
+Tenant
+Empresa/unidade lógica dentro da DGE
+Actor
+Pessoa ou sistema que faz uma ação
+Role
+Função do actor, como operador ou gestor
+Scope
+Limite de atuação, como hub, canal ou projeto
+Action availability
+Resposta do backend dizendo se uma ação é permitida e por
+quê
+
+
+--- PAGE 16 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 16
+IA e RAI
+INTELIGÊNCIA COM MEMÓRIA RASTREÁVEL
+A DGE pode usar IA, mas não como camada solta de opinião. RAI, no contexto da DGE, significa inteligência aumentada
+por recuperação de memória auditada. A IA futura deve receber contexto de dados, snapshots, exceções, BI, reforecast e
+Service Desk para recomendar com base em fatos rastreáveis.
+Isso muda o tipo de pergunta que a IA pode responder. Em vez de “o que você acha?”, a DGE pode perguntar: com base
+nos KPIs observados, no histórico de projeção, no estoque por location, nas exceções abertas e no comportamento do
+canal, qual é a causa provável do desvio? Qual risco parece mais urgente? Qual playbook deve ser sugerido? Qual
+evidência está faltando?
+O limite é tão importante quanto a capacidade. A IA não deve aprovar cupom, compra, baixa de estoque, reforecast oficial,
+ajuste financeiro, contato externo ou decisão fiscal. Ela recomenda, explica, prioriza e resume. A ação final continua
+governada por actor, role, scope, aprovação e rastro.
+A diferença para IA genérica
+A IA da DGE deve raciocinar sobre memória operacional auditada, não sobre texto solto. Isso permite recomendação mais útil
+e menos fantasiosa.
+
+
+--- PAGE 17 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 17
+O que já está desenvolvido
+BACKEND REAL EM CONSTRUÇÃO
+Esta seção existe para evitar a impressão de que o relatório descreve apenas um sistema imaginário. A DGE 2.0 já possui
+um backbone de backend em construção com módulos, contratos, checks, smokes, datasets e registries. A tela final ainda
+não é prioridade, justamente porque a camada invisível precisa estar madura antes.
+Na frente de inteligência, já há Data Intake, KPI Intelligence, Projection Impact, Adaptive Projection, Forecast
+Reconciliation e Official Reforecast como arquitetura ativa ou estruturada. Na frente operacional, já há ERP core, catálogo,
+preços, cupons, compras, estoque, locations, fulfillment pools/CDD, commerce behavior, Bling assisted import,
+reconciliation e Exception Hub. Na frente de governança, já há Tenant/Auth hardening, action availability parcial, checks e
+Roadmap Debt Register.
+O status honesto é: existe uma active spine grande, mas ainda há módulos parciais e planejados. Isso é bom. O sistema
+não deve fingir maturidade onde ainda existe skeleton. A DGE está construindo mecanismos para saber o que está ativo, o
+que está parcial, o que está planejado e o que bloqueia avanço.
+Status
+Capacidades
+Ativo / avançado
+ERP core, Data Intake, KPI Intelligence, Commerce, Bling
+assisted import, BI datasets, Auth/Tenant, Official Reforecast
+Parcial / skeleton
+Flow Registry, ERP Completeness Audit, Roadmap Debt,
+Service Desk, n8n Control Plane, BI Semantic Foundation
+Planejado
+Frenet/Loggi real, Superset real, ecommerce backend real, IA
+operacional, frontend final
+
+
+--- PAGE 18 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 18
+Dores registradas e próximos blocos
+O QUE FALTA PARA FICAR OPERÁVEL DE VERDADE
+A DGE já começou a registrar dívida técnica e bloqueios. Isso é fundamental para o Pró 20x: acelerar sem mapa só
+multiplica drift. Os gaps mais sensíveis hoje são master data e operacionalização de responsabilidade: locations sem
+actor/role, locations sem fulfillment policy, SKUs ativos em canal sem preço, SKUs sem channel settings e SKUs sem
+supplier.
+Esses gaps doem porque impedem a operação de ser acionável. Location sem actor não tem dono claro. Location sem
+fulfillment policy não sabe se pode expedir, receber transferência ou abastecer CDD. SKU ativo sem preço válido não
+deveria publicar ou vender. SKU sem supplier fragiliza compra, custo, reposição e futuro XML/NF-e. Isso não é perfumaria
+cadastral; é bloqueio real de operação.
+Há também lacunas arquiteturais futuras já separadas: CDD Stock Semantics + Supplier Inbound Distribution e ERP Fiscal
+& Accounting Distribution Layer. A primeira corrige a semântica logística: CDD tem estoque próprio, hub tem estoque
+próprio e pool calcula reposição. A segunda adiciona valor contábil/fiscal: movimento de estoque não é igual a documento
+fiscal, receita realizada ou margem gerencial.
+A sequência recomendada continua: Service Desk para transformar exceção em trabalho humano, n8n Control Plane para
+automação governada, BI/Superset Semantic Foundation para leitura certificada, Freight/Frenet/Loggi runtime para
+logística real, Bling live controlled run com dados reais, IA/RAI operacional e só depois frontend final.
+Gap
+Por que dói
+Bloco de resolução
+Location sem actor/role
+Sem dono operacional, SLA ou fila por
+responsável
+Service Desk + ERP master data
+Location sem fulfillment policy
+CDD/hub não sabe expedir, receber ou
+abastecer
+CDD fulfillment policy hardening
+SKU ativo sem preço válido
+Canal pode tentar vender sem preço
+DGE
+Price list governance
+SKU sem supplier
+Compra, custo e reposição ficam
+frágeis
+Supplier/purchase hardening
+CDD tratado como soma de hubs
+Estoque pronto e reposição ficam
+confundidos
+CDD Stock Semantics
+Distribuição sem fiscal/accounting
+Movimento físico fica sem valor,
+documento e impacto
+Fiscal & Accounting Distribution
+
+
+--- PAGE 19 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 19
+Arquitetura em camadas
+COMO AS PEÇAS SE ENCAIXAM
+Para explicar a DGE para alguém não técnico, a melhor imagem é uma construção em camadas. A primeira camada é a
+operação real: produtos, pedidos, estoque, nota, frete, compra, marketplace, ecommerce e loja. A segunda camada é a
+entrada governada: Data Intake, integrações assistidas e eventos externos. A terceira camada é a normalização:
+transformar dados diferentes em uma linguagem comum da DGE.
+Depois vem a camada de decisão operacional: ERP, Commerce, fulfillment, CDD, estoque, transferência, gates e
+exceções. Essa camada responde se algo pode acontecer com segurança. Um pedido pode reservar estoque? Um SKU
+pode publicar? Uma compra pode virar saldo disponível? Um canal tem preço válido? Uma location tem policy?
+Acima disso vem a camada inteligente: KPI Intelligence, fórmulas, snapshots, lineage, Projection Impact, Adaptive
+Projection, Forecast Reconciliation e Official Reforecast. Essa camada responde o que a operação real muda no plano. Ela
+não substitui a operação; ela interpreta a operação.
+Por fim, existe a camada de apresentação e decisão: Cockpit, BI, Command Center, Service Desk futuro, Superset/Power
+BI futuro e frontend final. Essa camada é onde o usuário vê, decide e acompanha. A regra de arquitetura é que a tela não
+inventa regra de negócio. Ela renderiza o que o backend já validou, calculou e autorizou.
+Camada
+Função
+Exemplo na DGE
+Operação real
+Fatos que acontecem no negócio
+Pedido, estoque, frete, compra, venda
+Entrada governada
+Receber dados com origem e controle
+Data Intake, Bling preview, webhook
+trace
+Normalização
+Traduzir fontes externas para
+linguagem DGE
+SKU mapping, channel classification
+Runtime operacional
+Executar regras materiais
+ERP, Commerce, CDD, transfer,
+reservation
+Inteligência
+Comparar, explicar e projetar impacto
+KPI, variance, reforecast
+Governança
+Controlar quem pode agir e aprovar
+Tenant, actor, role, scope
+Apresentação
+Mostrar decisão e fila de trabalho
+Cockpit, BI, frontend futuro
+
+
+--- PAGE 20 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 20
+Módulos já estruturados
+O QUE EXISTE POR TRÁS DO RELATÓRIO
+A força do relatório precisa vir do fato de que a DGE já tem backend em construção. Não é uma proposta de slides.
+Existem módulos, contratos, checks e artefatos. Alguns estão ativos, outros parciais e outros planejados. A maturidade
+está em registrar essa diferença de forma honesta.
+Os módulos de inteligência são os que diferenciam a DGE: Data Intake, KPI Intelligence, Projection Impact, Adaptive
+Projection, Forecast Reconciliation e Official Reforecast. Eles sustentam a tese de que dado real pode alimentar revisão de
+projeção com memória e governança.
+Os módulos operacionais sustentam a execução: ERP catalog, price lists, coupons, purchase receipt, inventory, locations,
+fulfillment pools, CDD, commerce orders, behavior trace, Bling assisted import e reconciliation. Eles existem para que a
+inteligência não fique sem base material.
+Os módulos de governança e qualidade protegem a escalada: tenant auth, action availability, Exception Hub, BI datasets,
+Flow Registry, State Machine Registry, Smoke Matrix, ERP Completeness Audit e Roadmap Debt Register. Eles mostram
+onde o sistema está forte e onde ainda dói.
+Família
+Módulos
+Valor executivo
+Inteligência
+Data Intake, KPI Intelligence, Projection
+Impact, Reforecast
+Transforma operação em revisão de
+cenário
+ERP
+Produtos, SKUs, preço, cupom,
+fornecedor, compra, estoque
+Cria verdade operacional mínima
+Commerce
+Pedidos, behavior trace, gates e
+reconciliation
+Liga venda real ao impacto operacional
+Fulfillment
+CDD, hubs, pools, reservation, transfer
+Controla onde estoque existe e de onde
+sai
+Integrações
+Bling preview/import, mapping
+governance
+Ingere dado externo sem destruir
+verdade canônica
+Governança
+Auth, actors, roles, exceptions, checks
+Impede ação sem permissão ou rastro
+Roadmap
+Debt Register, Flow Registry, ERP
+completeness
+Mostra lacuna e bloqueio de avanço
+
+
+--- PAGE 21 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 21
+Simulação 3: reforecast mensal
+QUANDO A REALIDADE MUDA A PROJEÇÃO
+Imagine que a projeção inicial previa crescimento do canal próprio com determinada margem, ticket médio, pedidos e
+custo de frete. Depois de algumas semanas, a operação começa a registrar números reais pelo Data Intake e por fontes
+assistidas. Esses números não substituem a projeção automaticamente. Eles entram como KPIs observados.
+A DGE compara o realizado contra o projetado. Se o frete real está acima da premissa, a margem projetada pode estar
+otimista. Se o ticket médio real está abaixo do plano, o GMV esperado pode ficar pressionado. Se a conversão observada
+é menor do que a premissa, a curva de crescimento do ecommerce próprio pode precisar de revisão. Cada um desses
+pontos depende de fórmula registrada.
+Projection Impact mostra quais famílias podem ser afetadas. Adaptive Projection pode sugerir um ajuste conservador.
+Forecast Reconciliation organiza o caso: qual era a previsão, o que aconteceu, qual a variância, qual evidência existe e se
+isso parece ruído ou tendência. Só depois disso nasce a possibilidade de Official Reforecast.
+O valor executivo é enorme: a Galpão deixa de olhar projeção como planilha estática. A projeção vira documento vivo, mas
+com governança. Ela pode ser revisada quando a realidade prova que o plano mudou, sem apagar o plano anterior e sem
+fingir que a nova versão sempre foi a verdade.
+Sinal real
+Variável/fórmula afetada
+Possível efeito
+Frete acima do previsto
+Margem líquida, payback
+Retorno mais longo ou necessidade de
+política logística
+Conversão abaixo da premissa
+Pedidos, GMV, curva de canal próprio
+Crescimento projetado precisa ser
+revisto
+Ticket médio diferente
+Receita e margem por pedido
+Cenário financeiro muda
+Dependência marketplace alta
+Migração de canal e margem
+Canal próprio ganha nova leitura
+comparativa
+Estoque pronto insuficiente no CDD
+Capacidade operacional e prazo
+Venda pode depender de reposição
+interna
+
+
+--- PAGE 22 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 22
+Simulação 4: exceção vira trabalho humano
+DA DETECÇÃO À RESOLUÇÃO
+Uma camada inteligente que só aponta problema ainda não fecha a operação. Por isso o próximo passo do roadmap inclui
+Service Desk. O Exception Hub detecta a exceção; o Service Desk transforma a exceção em trabalho humano com
+responsável, SLA, comentário, evidência, playbook e resolução.
+Exemplo: o Bling traz um pedido de marketplace com SKU desconhecido. A DGE não cria o SKU automaticamente. Ela
+registra a exceção, cria mapping candidate ou bloqueio, mostra o impacto no Cockpit e, no futuro Service Desk, abre tarefa
+para o responsável revisar o cadastro. Depois que o mapping for aprovado, o pedido pode ser reprocessado com
+segurança.
+Outro exemplo: um CDD não tem estoque suficiente para um pedido online. A DGE não finge que o estoque dos hubs já
+está no CDD. Ela mostra estoque próprio do CDD, capacidade de reposição dos hubs e necessidade de plano de
+transferência. Se o hub acionado for franqueado, pode haver necessidade de reembolso e regra fiscal futura.
+Essa lógica transforma a DGE em operação real. Detectar, priorizar, atribuir, resolver, auditar e medir reincidência é
+diferente de apenas exibir erro. A promessa futura para a Galpão não é “a IA viu um problema”; é “a DGE detectou,
+explicou, atribuiu, acompanhou SLA e preservou a resolução”.
+- Exception Hub registra problema e impacto.
+- Service Desk futuro cria ticket idempotente.
+- Actor responsável assume resolução.
+- Evidências e comentários preservam contexto.
+- Reprocessamento só acontece quando permitido.
+
+
+--- PAGE 23 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 23
+Validação controlada com dados reais
+O PRÓXIMO MOVIMENTO PRÁTICO
+O relatório não deve pedir um salto direto para produção. O movimento mais maduro é uma validação controlada com
+dados reais ou semirreais da Galpão. O objetivo não é ainda criar frontend final; é provar a cadeia inteligente: entrada de
+dado, KPI, fórmula, variância, exceção, BI e reforecast governado.
+A validação pode começar com dados exportados ou amostras controladas: produtos, SKUs, preços, pedidos, estoque,
+vendas por canal, frete, marketplace e compras. A DGE deve ingerir esses dados como preview ou Data Intake, mapear
+para entidades canônicas, detectar lacunas e mostrar quais KPIs e projeções podem ser afetados.
+Essa fase também revela a qualidade operacional da base. Se há SKU sem preço, hub sem policy, loja sem actor ou
+estoque divergente, isso não deve ser escondido. Deve virar gap registrado. O valor para a Galpão é enxergar onde a
+operação precisa ser organizada antes de escalar ecommerce, marketplace, BI e automação.
+A validação controlada é a ponte entre relatório e piloto real. Ela permite mostrar que a DGE não é apenas tese bonita: o
+sistema consegue receber dados, preservar origem, calcular impacto, apontar gargalo, abrir exceção e preparar revisão de
+cenário.
+Entrada de validação
+O que a DGE comprova
+Produtos/SKUs
+Catálogo canônico, gaps de categoria, mídia, fornecedor e
+dimensões
+Preços por canal
+Price list governance e publicação por
+ecommerce/marketplace/loja
+Pedidos
+Dedupe, reconciliation, channel classification e gates
+Estoque
+Saldo canônico vs estoque observado e gaps por location
+Frete/margem
+Impacto em fórmula de margem e payback
+KPIs reais
+Variance e reforecast readiness
+
+
+--- PAGE 24 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 24
+Próximos ciclos antes do frontend final
+SEQUÊNCIA SEGURA
+A decisão de não queimar energia em frontend agora está correta. Frontend cedo demais vira maquiagem: mostra uma
+superfície bonita antes de a regra estar pronta. A DGE precisa chegar no frontend com fluxo, estado, contrato, exceção, BI,
+auth e resolução humana suficientes.
+Antes do Pró 20x, os ciclos mais valiosos são os que aumentam clareza e capacidade de aceleração: Backbone Truth,
+ERP Completeness Audit, Service Desk, n8n Control Plane e BI/Superset Semantic Foundation. Esses blocos não são
+visualmente chamativos, mas reduzem risco de drift quando a execução acelerar.
+Depois do 20x, a ordem segura é hardening pesado, Frenet/Loggi runtime, Superset real, Bling live controlled run,
+simulação end-to-end, IA/RAI operacional, ecommerce backend real, UX/UI prototyping e frontend final. A ideia é simples:
+acelerar execução, não acelerar confusão.
+O frontend final deve ser a consequência de um sistema que já sabe o que mostrar e quais ações permitir. Cada botão
+deve vir de actionAvailability do backend. Cada tela deve renderizar estado real. Cada exceção deve ter entidade, impacto
+e responsável. Cada dashboard deve consumir dataset semântico, não tabela crua.
+Fase
+Prioridade
+Motivo
+Pré-20x
+Backbone Truth + ERP Completeness
+Saber o que existe, o que falta e o que
+bloqueia avanço
+Pré-20x
+Service Desk
+Transformar exceção em execução
+humana
+Pré-20x
+n8n + BI Semantic
+Preparar automação e análise sem
+caixa-preta
+Pós-20x
+Frete/Loggi/Frenet + Superset
+Conectar logística e BI real
+Pós-20x
+IA/RAI + Ecommerce backend
+Usar dados auditados para inteligência
+e canal próprio
+Pós-20x
+Frontend final
+Renderizar sistema maduro, não
+esconder lacuna
+
+
+--- PAGE 25 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 25
+Como apresentar isso para a Galpão
+NARRATIVA RECOMENDADA
+A narrativa para o Felipe não deve começar dizendo que existe um ERP. Isso reduz a DGE. A narrativa correta começa
+pela inteligência: o piloto evoluiu para uma base que transforma operação real em leitura de crescimento. Depois entram
+os módulos que tornam isso possível: ERP, Data Intake, KPI Intelligence, BI, Bling, fulfillment, Exception Hub, reforecast e
+governança.
+A segunda mensagem é execução. O relatório precisa mostrar que já existe backend avançado, mas explicar backend em
+linguagem simples: a parte invisível que registra, valida, calcula, audita e conecta dados. Isso evita parecer promessa
+vazia e também evita exigir que o leitor entenda tecnologia de cara.
+A terceira mensagem é maturidade. A DGE não está pronta para vender como produto final, mas já não é só uma ideia.
+Ela tem estrutura, decisões arquiteturais, limites, debt register e próximos passos. Isso comunica seriedade: há ambição,
+mas também há método.
+A quarta mensagem é oportunidade. Com dados reais da Galpão, a DGE pode validar o fluxo de entrada, KPIs, projeções,
+Bling, estoque, CDD, marketplace e reforecast. Não precisa prometer frontend lindo agora. A proposta forte é validar a
+inteligência e a operação antes da superfície visual final.
+Tom recomendado
+Não vender como sistema pronto. Vender como evolução concreta do piloto para uma arquitetura operacional inteligente, já
+em construção, pronta para validação controlada com dados reais.
+
+
+--- PAGE 26 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 26
+Glossário extenso
+REFERÊNCIA PARA LEITOR NÃO TÉCNICO
+Este glossário traduz os termos usados no documento para linguagem operacional. A regra é simples: nenhum termo
+técnico deve ficar sem contexto. Quando a DGE usa uma palavra como backend, snapshot, lineage ou reforecast, o leitor
+precisa entender o que isso significa na prática da Galpão.
+Termo
+Significado no contexto da DGE
+Backend
+Parte invisível do sistema que valida, calcula, registra e audita dados antes da tela.
+Backbone
+Espinha operacional: conjunto de módulos que sustenta a DGE por trás da interface.
+Frontend
+Parte visual usada por pessoas; na DGE deve renderizar regras já calculadas pelo backend.
+API
+Caminho controlado para sistemas trocarem dados.
+Módulo
+Parte funcional da DGE, como ERP, BI, Data Intake ou Reforecast.
+ERP
+Base operacional de produtos, SKUs, estoque, compras, preços e locations.
+SKU
+Código que identifica uma variação vendável de produto.
+KPI
+Indicador numérico que mede uma parte da operação.
+Data Intake
+Camada governada de entrada de dados manuais, assistidos ou futuros automatizados.
+Collector
+Coletor específico de dados dentro do Data Intake.
+Snapshot
+Fotografia auditável de um dado ou estado em determinada data.
+Trace
+Rastro explicável de cálculo, fonte, decisão ou raciocínio.
+Lineage
+Histórico de origem e evolução de uma projeção, dado ou versão.
+Fórmula
+Regra predefinida usada para calcular um indicador ou projeção.
+Premissa
+Hipótese usada em uma projeção, como conversão, margem ou crescimento.
+Projeção
+Plano calculado de desempenho futuro.
+Variância
+Diferença entre o valor projetado e o valor observado.
+Gargalo
+Restrição ou problema operacional que pode limitar resultado.
+Projection Impact
+Preview de quais fórmulas/projeções podem ser afetadas por um gargalo.
+Adaptive Projection
+Camada conservadora que sugere simulações a partir de variâncias persistentes.
+Forecast Reconciliation
+Camada que interpreta diferença entre previsão e realidade auditada.
+Reforecast
+Nova versão governada de uma projeção, sem apagar a versão anterior.
+BI
+Camada de análise e leitura de dados.
+Dataset
+Tabela preparada para análise com significado estável.
+Cockpit
+Mesa operacional para acompanhar filas, riscos e prioridades.
+Command Center
+Leitura consolidada da saúde da operação.
+Exception Hub
+Central de exceções e inconsistências operacionais.
+Auth
+Regra de permissão para ver, agir ou aprovar.
+Tenant
+Empresa ou unidade lógica atendida pelo sistema.
+Actor
+Pessoa ou sistema que executa uma ação.
+Role
+Função operacional de um actor, como operador ou gestor.
+
+
+--- PAGE 27 ---
+DGE 2.0 | Inteligência operacional auditável
+p. 27
+Termo
+Significado no contexto da DGE
+Scope
+Limite de atuação de uma pessoa ou sistema, como hub, canal ou projeto.
+Bling
+Fonte auxiliar de pedidos, notas e estoque observado; não é verdade canônica da DGE.
+Marketplace
+Canal/provedor de venda, como Mercado Livre ou Shopee.
+CDD
+Centro de distribuição físico com estoque próprio.
+Hub
+Location física que pode armazenar estoque ou abastecer outra location.
+Fulfillment Pool
+Política que define quais locations podem atender ou abastecer um canal.
+Replenishable capacity
+Quantidade que pode abastecer o CDD a partir de hubs elegíveis.
+RAI
+Inteligência artificial com recuperação de contexto rastreável.
+Smoke/check
+Validação automática que confirma se uma parte do backend continua funcionando.
+Debt Register
+Registro de dívida técnica e bloqueios de avanço.
+Payback
+Tempo ou condição para recuperar investimento.
+Canal próprio
+Canal de venda controlado pela Galpão, como ecommerce próprio.
+Migração de canal
+Movimento estratégico de reduzir dependência de marketplaces e fortalecer canal próprio.
+Dedupe
+Processo de evitar que o mesmo pedido seja importado duas vezes.
+Mapping
+Conexão revisada entre dado externo e entidade canônica da DGE.
+Gate
+Trava operacional que impede ação perigosa sem condição mínima.

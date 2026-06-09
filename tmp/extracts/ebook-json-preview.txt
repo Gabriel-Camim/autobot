@@ -1,0 +1,462 @@
+{
+  "name": "Base ebook generator",
+  "nodes": [
+    {
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const raw = $json?.choices?.[0]?.message?.content || '{}';\nlet parsed;\ntry { parsed = JSON.parse(raw); }\ncatch (e) { parsed = { erro: 'JSON invalido', recebido: raw }; }\nreturn { json: parsed };"
+      },
+      "id": "752d5925-5885-47db-b3ac-4384b8d0c7a8",
+      "type": "n8n-nodes-base.code",
+      "name": "(parse) output gpt organizado",
+      "alwaysOutputData": false,
+      "position": [
+        400,
+        256
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "const RAW = $json.user_prompt || '';\nconst MAX_CHARS = 100000;\nconst prompt = RAW.slice(0, MAX_CHARS);\n\nconst systemMsg = `\nVoce e um agente composto de estrategia editorial, branding e marketing.\nSua funcao e transformar o dataset consolidado em um unico blueprint estrategico coerente para um produto editorial premium.\n\nRegras criticas:\n- mantenha um unico eixo central do comeco ao fim\n- nao misture temas diferentes\n- preserve preferencias explicitas do briefing de geracao\n- trate quantidade de capitulos, condensacao de conteudo, estilo do livro e cor do ebook como restricoes obrigatorias\n- pense em livro, ebook, guia, manual, cronica, obra inspiradora ou hibrido editorial, nao apenas em ebook padrao\n- construa um produto com assinatura editorial humana, sofisticada e confiavel\n- evite linguagem com cara de IA, frases plasticas, generalidades e moralismo generico\n- se o tema pedir fe, reverencia, contemplacao, memoria, inspiracao ou espiritualidade, isso deve aparecer com profundidade real na voz e na estrutura\n- defina uma direcao visual distintiva, nao repetitiva e nunca padronizada por default\n- inclua no blueprint os blocos editorial_spec, gamma_spec e image_strategy\n- responda apenas com JSON completo, preenchido e especifico\n`;\n\nconst userMsg = `DATASET AGREGADO ESTRUTURADO:\\n\\n${prompt}\\n\\nInstrucoes finais:\\n- produza um unico blueprint estrategico\\n- nao escreva o livro final\\n- inclua direcao visual, direcao de capa, regras de linguagem, identidade editorial e orientacoes para Gamma\\n- inclua editorial_spec com chapter_count, content_density, book_style, color_direction, voice_mode e reader_relationship\\n- inclua gamma_spec com text_mode, amount, dimensions, visual_treatment e image_intensity\\n- inclua image_strategy com role_of_images, estimated_image_count, image_moments e image_style\\n- nao deixe campos essenciais vazios se houver base no dataset\\n- respeite o briefing de geracao\\n- responda somente com o JSON completo`;\n\nconst body = {\n  model: 'gpt-5.4-mini',\n  response_format: { type: 'json_object' },\n  messages: [\n    { role: 'system', content: systemMsg },\n    { role: 'user', content: userMsg }\n  ]\n};\n\nfunction simpleHash(str) {\n  let hash = 0;\n  if (str.length === 0) return '0';\n  for (let i = 0; i < str.length; i++) {\n    const char = str.charCodeAt(i);\n    hash = (hash << 5) - hash + char;\n    hash |= 0;\n  }\n  return Math.abs(hash).toString(36);\n}\n\nconst promptRaw = JSON.stringify(body);\nconst prompt_id = simpleHash(promptRaw);\nconst prompt_b64 = Buffer.from(promptRaw, 'utf8').toString('base64');\nconst preview = prompt.slice(0, 500);\n\nreturn [\n  {\n    json: {\n      ...$json,\n      body,\n      stats: {\n        chars_in: ($json.user_prompt || '').length,\n        preview\n      },\n      prompt_id,\n      prompt_b64,\n      subreddit: 'comunidades-online-publicas'\n    }\n  }\n];"
+      },
+      "id": "b36058df-0023-4912-be75-35420c65ca00",
+      "type": "n8n-nodes-base.code",
+      "name": "prompt gpt + conexao com o json escavado",
+      "position": [
+        32,
+        240
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $('prompt gpt + conexao com o json escavado').item.json.body }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 20,
+              "batchInterval": 3000
+            }
+          },
+          "timeout": 900000
+        }
+      },
+      "id": "3991342c-081a-4a17-8178-95eaba3541ee",
+      "type": "n8n-nodes-base.httpRequest",
+      "retryOnFail": false,
+      "name": "http request openai",
+      "waitBetweenTries": 5000,
+      "maxTries": 2,
+      "position": [
+        208,
+        256
+      ],
+      "typeVersion": 4.3,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lgluxaKyQWdfkFYp",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const PRICE_INPUT = 0.25;\nconst PRICE_OUTPUT = 2.00;\nconst charsToTokens = (chars) => Math.ceil(chars / 4);\n\nconst inputSystemUser = $json.body?.messages\n  ? $json.body.messages.map(m => m.content).join(\"\\n\")\n  : \"entrada nao encontrada\";\n\nconst outputText = typeof $json === \"object\" ? JSON.stringify($json) : String($json);\n\nconst chars_in = inputSystemUser.length;\nconst tokens_in = charsToTokens(chars_in);\nconst chars_out = outputText.length;\nconst tokens_out = charsToTokens(chars_out);\n\nconst cost_input_usd = (tokens_in / 1000000) * PRICE_INPUT;\nconst cost_output_usd = (tokens_out / 1000000) * PRICE_OUTPUT;\nconst cost_total_usd = cost_input_usd + cost_output_usd;\n\nconsole.log(\"===== GPT-5-mini Token and Cost Report =====\");\nconsole.log(`Input:  ${chars_in.toLocaleString()} chars -> ${tokens_in.toLocaleString()} tokens`);\nconsole.log(`Output: ${chars_out.toLocaleString()} chars -> ${tokens_out.toLocaleString()} tokens`);\nconsole.log(\"------------------------------------------\");\nconsole.log(`Cost input : $${cost_input_usd.toFixed(6)}`);\nconsole.log(`Cost output: $${cost_output_usd.toFixed(6)}`);\nconsole.log(`Total cost : $${cost_total_usd.toFixed(6)}`);\nconsole.log(\"==========================================\");\n\nreturn [{\n  json: {\n    chars_in,\n    tokens_in,\n    chars_out,\n    tokens_out,\n    cost_input_usd,\n    cost_output_usd,\n    cost_total_usd\n  }\n}];"
+      },
+      "id": "68ed3f3f-2fc1-47de-b3c8-5c7031ec740c",
+      "type": "n8n-nodes-base.code",
+      "name": "contador token",
+      "position": [
+        1344,
+        992
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "inputSource": "passthrough"
+      },
+      "id": "789bb9a3-2d28-471a-8c2f-b447880e2ff0",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "name": "Start",
+      "position": [
+        0,
+        0
+      ],
+      "typeVersion": 1.1
+    },
+    {
+      "parameters": {
+        "operation": "toJson",
+        "binaryPropertyName": "=",
+        "options": {
+          "fileName": "output_gpt_parsed.json"
+        }
+      },
+      "id": "78e2002f-4b9c-4384-8fb4-962e1bf1d185",
+      "type": "n8n-nodes-base.convertToFile",
+      "name": "Convert to File",
+      "position": [
+        1360,
+        816
+      ],
+      "typeVersion": 1.1
+    },
+    {
+      "parameters": {
+        "jsCode": "const payload = $json || {};\nconst blueprint = payload.editorial_blueprint && typeof payload.editorial_blueprint === 'object'\n  ? payload.editorial_blueprint\n  : payload;\nconst editorial = payload.editorial_execution_spec && typeof payload.editorial_execution_spec === 'object'\n  ? payload.editorial_execution_spec\n  : {};\n\nconst compact = {\n  titulo: blueprint.titulo || blueprint.title || '',\n  subtitulo: blueprint.subtitulo || blueprint.subtitle || '',\n  headline: blueprint.headline || '',\n  promessa_central: blueprint.promessa_central || blueprint.core_promise || '',\n  tema_central: blueprint.tema_central || blueprint.central_axis || '',\n  angulo_editorial: blueprint.angulo_editorial || blueprint.editorial_positioning || '',\n  publico_alvo: blueprint.publico_alvo || blueprint.publico_alvo_inicial || blueprint.target_audience || '',\n  transformacao_prometida: blueprint.transformacao_prometida || blueprint.promised_transformation || '',\n  editorial_spec: blueprint.editorial_spec || {},\n  gamma_spec: blueprint.gamma_spec || {},\n  image_strategy: blueprint.image_strategy || {},\n  chapter_blueprints: Array.isArray(blueprint.chapter_blueprints) ? blueprint.chapter_blueprints : [],\n  language_rules: Array.isArray(blueprint.language_rules) ? blueprint.language_rules : [],\n  anti_generic_rules: Array.isArray(blueprint.anti_generic_rules) ? blueprint.anti_generic_rules : []\n};\n\nconst execution = {\n  work_form: editorial.work_form || '',\n  reader_relationship: editorial.reader_relationship || '',\n  narrative_mode: editorial.narrative_mode || '',\n  narrative_presence: editorial.narrative_presence || '',\n  faith_register: editorial.faith_register || '',\n  sacred_language_intensity: editorial.sacred_language_intensity || '',\n  structure_logic: editorial.structure_logic || '',\n  chapter_formula: editorial.chapter_formula || '',\n  chapter_length_profile: editorial.chapter_length_profile || '',\n  opening_texture: editorial.opening_texture || '',\n  ending_strategy: editorial.ending_strategy || '',\n  block_mix_strategy: editorial.block_mix_strategy || '',\n  allowed_block_types: Array.isArray(editorial.allowed_block_types) ? editorial.allowed_block_types : [],\n  required_block_types: Array.isArray(editorial.required_block_types) ? editorial.required_block_types : [],\n  forbidden_default_patterns: Array.isArray(editorial.forbidden_default_patterns) ? editorial.forbidden_default_patterns : [],\n  use_of_testimonies: editorial.use_of_testimonies || '',\n  use_of_historical_cases: editorial.use_of_historical_cases || '',\n  use_of_commentary_voice: editorial.use_of_commentary_voice || '',\n  image_density: editorial.image_density || '',\n  estimated_image_count: editorial.estimated_image_count || 0,\n  image_moments: Array.isArray(editorial.image_moments) ? editorial.image_moments : [],\n  image_style: editorial.image_style || '',\n  cover_posture: editorial.cover_posture || '',\n  gamma_visual_strategy: editorial.gamma_visual_strategy || '',\n  language_rules: Array.isArray(editorial.language_rules) ? editorial.language_rules : [],\n  anti_generic_rules: Array.isArray(editorial.anti_generic_rules) ? editorial.anti_generic_rules : []\n};\n\nconst systemMsg = `Voce e Walter Write, um escritor editorial senior especializado em obras premium em portugues do Brasil.\n\nSua funcao e escrever um livro ou ebook completo em JSON estruturado, obedecendo rigorosamente o blueprint estrategico e a especificacao editorial do diretor.\n\nRegras criticas:\n- escreva uma obra final completa, nao um resumo\n- preserve um unico eixo tematico do comeco ao fim\n- nao caia no molde automatico de ebook generico\n- respeite quantidade de capitulos, densidade, genero e relacao com o leitor\n- se a obra pedir fe, reverencia, contemplacao, memoria, cronica ou testemunho, isso deve aparecer de forma material na voz, no ritmo e nos blocos\n- use os blocos como ferramenta flexivel, nao como grade rigida repetitiva\n- varie a arquitetura entre capitulos quando fizer sentido\n- nao use linguagem com cara de IA, frases plasticas ou coaching vazio\n- o nome da editora deve ser sempre Scriptora Studio Editorial\n- nao inclua autor pessoal\n\nRetorne apenas JSON valido com esta estrutura:\n{\n  \"ebook\": {\n    \"meta\": {\n      \"title\": \"\",\n      \"subtitle\": \"\",\n      \"headline\": \"\",\n      \"core_promise\": \"\",\n      \"target_audience\": \"\",\n      \"tone\": \"\",\n      \"book_style\": \"\",\n      \"content_density\": \"\",\n      \"chapter_count_target\": 0,\n      \"primary_color_direction\": \"\",\n      \"publisher\": \"Scriptora Studio Editorial\"\n    },\n    \"cover\": {\n      \"title\": \"\",\n      \"subtitle\": \"\",\n      \"visual_concept\": \"\",\n      \"image_prompt\": \"\",\n      \"color_palette\": [\"\"],\n      \"style_notes\": \"\"\n    },\n    \"frontmatter\": {\n      \"introduction\": {\n        \"blocks\": [\n          { \"type\": \"paragraph\", \"content\": \"\" }\n        ]\n      },\n      \"table_of_contents\": [\n        { \"title\": \"\", \"purpose\": \"\" }\n      ]\n    },\n    \"body\": {\n      \"chapters\": [\n        {\n          \"title\": \"\",\n          \"purpose\": \"\",\n          \"emotional_goal\": \"\",\n          \"blocks\": [\n            { \"type\": \"paragraph\", \"content\": \"\" }\n          ],\n          \"design\": {\n            \"visual_elements\": [\"\"],\n            \"image_suggestions\": [\"\"]\n          }\n        }\n      ]\n    },\n    \"backmatter\": {\n      \"conclusion\": {\n        \"blocks\": [\n          { \"type\": \"paragraph\", \"content\": \"\" }\n        ]\n      },\n      \"cta\": {\n        \"title\": \"\",\n        \"description\": \"\",\n        \"action\": \"\"\n      },\n      \"about_author\": {\n        \"title\": \"Sobre o estudio\",\n        \"text\": \"Scriptora Studio Editorial cria produtos editoriais premium com foco em clareza, profundidade e transformacao aplicavel. Este livro foi concebido para unir acolhimento emocional, densidade simbolica e estrutura editorial consistente, respeitando o genero, o contexto e a experiencia do leitor.\"\n      }\n    },\n    \"gamma\": {\n      \"format\": \"document\",\n      \"text_mode\": \"\",\n      \"amount\": \"\",\n      \"dimensions\": \"\",\n      \"tone\": \"\",\n      \"theme_hint\": \"\",\n      \"color_direction\": \"\",\n      \"image_density\": \"\",\n      \"estimated_image_count\": 0,\n      \"image_style\": \"\",\n      \"chapter_opening_pattern\": \"\",\n      \"cover_notes\": \"\",\n      \"additional_instructions\": [\"\"],\n      \"visual_guidelines\": [\"\"],\n      \"image_guidelines\": [\"\"],\n      \"cta_strategy\": \"\"\n    }\n  }\n}`;\n\nconst userMsg = `BLUEPRINT ESTRATEGICO:\\n\\n${JSON.stringify(compact, null, 2)}\\n\\nESPECIFICACAO EDITORIAL EXECUTAVEL:\\n\\n${JSON.stringify(execution, null, 2)}\\n\\nEscreva a obra final completa em JSON, obedecendo o genero, o ritmo, os blocos, a voz e a ambicao visual definidos acima.`;\n\nconst body = {\n  model: 'gpt-5.4',\n  response_format: { type: 'json_object' },\n  messages: [\n    { role: 'system', content: systemMsg },\n    { role: 'user', content: userMsg }\n  ]\n};\n\nreturn [{\n  json: {\n    ...payload,\n    body\n  }\n}];"
+      },
+      "id": "85d5e95e-ec6a-4e26-a9ed-987579ddf595",
+      "type": "n8n-nodes-base.code",
+      "name": "walter write",
+      "position": [
+        1136,
+        272
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $('walter write').item.json.body }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 20,
+              "batchInterval": 3000
+            }
+          },
+          "timeout": 900000
+        }
+      },
+      "id": "454f0efe-d402-4fa2-841b-c040f6168fbb",
+      "type": "n8n-nodes-base.httpRequest",
+      "retryOnFail": false,
+      "name": "http request openai2",
+      "waitBetweenTries": 5000,
+      "maxTries": 2,
+      "position": [
+        1296,
+        272
+      ],
+      "typeVersion": 4.3,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lgluxaKyQWdfkFYp",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "let raw = $json.choices?.[0]?.message?.content;\nif (!raw) throw new Error('Sem content do OpenAI');\n\nlet parsed;\ntry {\n  parsed = JSON.parse(raw);\n} catch (error) {\n  throw new Error('JSON invalido no retorno do Walter');\n}\n\nconst ebook = parsed.ebook;\nif (!ebook) throw new Error('Sem ebook no retorno do Walter');\n\nconst editorialExecutionSpec = $('Parse Diretor Editorial').first().json.editorial_execution_spec || {};\n\nreturn [{\n  json: {\n    ...ebook,\n    editorial_execution_spec: editorialExecutionSpec\n  }\n}];"
+      },
+      "id": "5f6aa4ae-14d0-4ff8-a953-d5f24a1156a1",
+      "type": "n8n-nodes-base.code",
+      "name": "Parse Ebook Raw",
+      "position": [
+        1472,
+        272
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "const safe = (value, fallback = '') => value === undefined || value === null ? fallback : value;\nconst safeArr = (value) => Array.isArray(value) ? value : [];\nconst pickRandom = (arr) => arr.length ? arr[Math.floor(Math.random() * arr.length)] : '';\nconst truncate = (value, max = 280) => {\n  const str = String(value || '').trim();\n  return str.length <= max ? str : `${str.slice(0, max - 1)}...`;\n};\n\nconst VALID_IMAGE_MODELS = [\n  'dall-e-3',\n  'imagen-3-flash',\n  'imagen-3-pro',\n  'imagen-4-pro',\n  'imagen-4-ultra',\n  'ideogram-v3',\n  'ideogram-v3-turbo',\n  'ideogram-v3-quality',\n  'ideogram-v3-flash',\n  'flux-1-pro',\n  'flux-1-quick',\n  'flux-1-ultra',\n  'flux-kontext-pro',\n  'flux-kontext-max',\n  'flux-kontext-fast',\n  'leonardo-phoenix',\n  'leonardo-sdxl-gamma-lora',\n  'leonardo-sdxl-mrpeepers-lora',\n  'recraft-v3',\n  'recraft-v3-svg',\n  'recraft-v4',\n  'recraft-v4-svg',\n  'recraft-v4-pro',\n  'luma-photon-1',\n  'luma-photon-flash-1',\n  'gpt-image-1-medium',\n  'gpt-image-1-high',\n  'gpt-image-1-mini-low',\n  'gpt-image-1-mini-medium',\n  'gpt-image-1-mini-high',\n  'qwen-image',\n  'qwen-image-fast',\n  'gemini-2.5-flash-image',\n  'veo-3.1-fast',\n  'veo-3.1',\n  'luma-ray-2-flash',\n  'luma-ray-2',\n  'leonardo-motion-2-fast',\n  'leonardo-motion-2',\n  'gemini-3-pro-image',\n  'gemini-3-pro-image-hd',\n  'gemini-3.1-flash-image-mini',\n  'gemini-3.1-flash-image',\n  'gemini-3.1-flash-image-hd',\n  'flux-2-pro',\n  'flux-2-flex',\n  'flux-2-max',\n  'flux-2-klein'\n];\n\nconst normalizeImageModel = (value) => {\n  const raw = String(value || '').trim();\n  return VALID_IMAGE_MODELS.includes(raw) ? raw : 'imagen-4-pro';\n};\n\nconst ebook = $json || {};\nconst meta = ebook.meta || {};\nconst cover = ebook.cover || {};\nconst frontmatter = ebook.frontmatter || {};\nconst body = ebook.body || {};\nconst backmatter = ebook.backmatter || {};\nconst gamma = ebook.gamma || {};\nconst execution = ebook.editorial_execution_spec || {};\n\nconst renderBlocks = (blocks = []) => safeArr(blocks)\n  .map((block) => {\n    const type = safe(block.type, 'paragraph');\n    const content = safe(block.content);\n    const items = safeArr(block.items);\n\n    if ((type === 'checklist' || type === 'comparison' || type === 'timeline') && items.length) {\n      return items.map((item) => `- ${item}`).join('\\n');\n    }\n\n    if (type === 'warning') return `Importante: ${content}`;\n    if (type === 'insight') return `Insight-chave: ${content}`;\n    if (type === 'example') return `Exemplo aplicado: ${content}`;\n    if (type === 'scene') return `Cena narrativa: ${content}`;\n    if (type === 'reflection') return `Reflexao: ${content}`;\n    if (type === 'quote') return `Trecho destacado: ${content}`;\n    if (type === 'devotional') return `Passagem devocional: ${content}`;\n    if (type === 'case_study') return `Caso: ${content}`;\n    return content;\n  })\n  .filter(Boolean)\n  .join('\\n\\n');\n\nconst normalizeTextMode = (value, density) => {\n  const raw = String(value || '').trim().toLowerCase();\n  if (['generate', 'condense', 'preserve'].includes(raw)) return raw;\n  const d = String(density || '').trim().toLowerCase();\n  if (raw.includes('concis') || raw.includes('resum') || d.includes('concis')) return 'condense';\n  if (raw.includes('ger') || raw.includes('expand') || raw.includes('dens') || d.includes('denso') || d.includes('muito alta') || d.includes('alta')) return 'generate';\n  return 'preserve';\n};\n\nconst normalizeAmount = (value, density) => {\n  const raw = String(value || '').trim().toLowerCase();\n  if (['brief', 'medium', 'detailed', 'extensive'].includes(raw)) return raw;\n  const d = String(density || '').trim().toLowerCase();\n  if (raw.includes('concis') || raw.includes('brief') || d.includes('concis')) return 'brief';\n  if (raw.includes('extens') || d.includes('muito alta')) return 'extensive';\n  if (raw.includes('detail') || raw.includes('denso') || d.includes('denso') || d.includes('alta')) return 'detailed';\n  return 'medium';\n};\n\nconst normalizeDimensions = (value, style) => {\n  const raw = String(value || '').trim().toLowerCase();\n  const allowed = ['fluid', '16x9', '4x3', 'pageless', 'letter', 'a4', '1x1', '4x5', '9x16'];\n  if (allowed.includes(raw)) return raw;\n  const s = String(style || '').trim().toLowerCase();\n  if (s.includes('manual') || s.includes('guia') || s.includes('pratico') || s.includes('prático')) return 'a4';\n  if (s.includes('fantasia') || s.includes('cronica') || s.includes('crônica') || s.includes('livro') || s.includes('devocional')) return 'pageless';\n  return 'a4';\n};\n\nconst toc = safeArr(frontmatter.table_of_contents);\nconst chapters = safeArr(body.chapters);\nconst title = safe(meta.title, safe(cover.title, 'Livro'));\nconst subtitle = safe(meta.subtitle, safe(cover.subtitle));\nconst corePromise = safe(meta.core_promise);\nconst targetAudience = safe(meta.target_audience);\nconst tone = safe(gamma.tone, safe(meta.tone, 'premium, humano e persuasivo'));\nconst bookStyle = safe(meta.book_style, safe(execution.work_form, 'livro'));\nconst contentDensity = safe(meta.content_density, 'equilibrado');\nconst chapterCountTarget = Number(meta.chapter_count_target || chapters.length || 0);\nconst requestedColor = safe(gamma.color_direction, safe(meta.primary_color_direction, ''));\nconst themeHint = safe(gamma.theme_hint, safe(execution.gamma_visual_strategy, pickRandom(['editorial_warm', 'premium_noir', 'soft_luxury', 'earthy_refined', 'emotional_minimal', 'high_contrast_classic'])));\nconst coverPalette = safeArr(cover.color_palette).filter(Boolean);\nconst textMode = normalizeTextMode(gamma.text_mode, contentDensity);\nconst amount = normalizeAmount(gamma.amount, contentDensity);\nconst dimensions = normalizeDimensions(gamma.dimensions, bookStyle);\nconst imageDensity = safe(gamma.image_density, safe(execution.image_density, 'media'));\nconst estimatedImageCount = Number(gamma.estimated_image_count || execution.estimated_image_count || 0);\nconst imageStyle = safe(gamma.image_style, safe(execution.image_style, 'editorial, tematico e coerente com a obra'));\nconst imageModel = normalizeImageModel(safe(gamma.image_model, safe(execution.image_model, 'imagen-4-pro')));\nconst stylePreset = safe(gamma.image_style_preset, safe(execution.image_style_preset, 'illustration'));\nconst chapterImagePrompts = chapters.flatMap((chapter, index) => safeArr(chapter.design?.image_suggestions).map((img) => `Capitulo ${index + 1}: ${img}`));\nconst chapterVisualElements = chapters.flatMap((chapter, index) => safeArr(chapter.design?.visual_elements).map((el) => `Capitulo ${index + 1}: ${el}`));\nconst imageMoments = safeArr(execution.image_moments);\nconst requiredBlockTypes = safeArr(execution.required_block_types);\nconst coverPosture = safe(execution.cover_posture);\nconst narrativePresence = safe(execution.narrative_presence);\nconst sacredLanguageIntensity = safe(execution.sacred_language_intensity);\nconst openingTexture = safe(execution.opening_texture);\nconst blockMixStrategy = safe(execution.block_mix_strategy);\nconst faithRegister = safe(execution.faith_register);\n\nconst chapterSections = chapters.map((chapter, index) => {\n  const chapterTitle = safe(chapter.title, `Capitulo ${index + 1}`);\n  const chapterPurpose = safe(chapter.purpose);\n  const chapterGoal = safe(chapter.emotional_goal);\n  const blockText = renderBlocks(chapter.blocks);\n  const visualElements = safeArr(chapter.design?.visual_elements).length\n    ? `Elementos visuais sugeridos: ${safeArr(chapter.design.visual_elements).join('; ')}`\n    : '';\n  const imageSuggestions = safeArr(chapter.design?.image_suggestions).length\n    ? `Sugestoes visuais: ${safeArr(chapter.design.image_suggestions).join('; ')}`\n    : '';\n  const opening = safe(gamma.chapter_opening_pattern, openingTexture || 'Abra cada capitulo com uma declaracao forte, sofisticada e orientada a transformacao.');\n\n  return [\n    `# ${chapterTitle}`,\n    chapterPurpose ? `Promessa do capitulo: ${chapterPurpose}` : '',\n    chapterGoal ? `Resultado emocional esperado: ${chapterGoal}` : '',\n    opening,\n    blockText,\n    visualElements,\n    imageSuggestions\n  ].filter(Boolean).join('\\n\\n');\n}).join('\\n\\n---\\n\\n');\n\nconst longEditorialNotes = [\n  safe(gamma.cover_notes),\n  safe(gamma.chapter_opening_pattern),\n  safeArr(gamma.additional_instructions).join('\\n'),\n  safeArr(gamma.visual_guidelines).join('\\n'),\n  safeArr(gamma.image_guidelines).join('\\n'),\n  safe(gamma.cta_strategy),\n  blockMixStrategy ? `Estrategia de mistura de blocos: ${blockMixStrategy}` : '',\n  imageMoments.length ? `Momentos visuais obrigatorios:\\n${imageMoments.join('\\n')}` : '',\n  requiredBlockTypes.length ? `Blocos obrigatorios: ${requiredBlockTypes.join(', ')}` : ''\n].filter(Boolean).join('\\n\\n');\n\nconst inputText = [\n  `# ${title}`,\n  subtitle,\n  corePromise ? `Promessa central: ${corePromise}` : '',\n  targetAudience ? `Publico-alvo: ${targetAudience}` : '',\n  `Estilo da obra: ${bookStyle}`,\n  `Condensacao do conteudo: ${contentDensity}`,\n  chapterCountTarget ? `Quantidade-alvo de capitulos: ${chapterCountTarget}` : '',\n  requestedColor ? `Cor ou direcao cromatica principal: ${requestedColor}` : '',\n  narrativePresence ? `Presenca narrativa desejada: ${narrativePresence}` : '',\n  sacredLanguageIntensity ? `Intensidade de linguagem sagrada: ${sacredLanguageIntensity}` : '',\n  faithRegister ? `Registro de fe: ${faithRegister}` : '',\n  coverPosture ? `Postura de capa: ${coverPosture}` : '',\n  cover.visual_concept ? `Conceito de capa: ${safe(cover.visual_concept)}` : '',\n  cover.image_prompt ? `Direcao visual da capa: ${safe(cover.image_prompt)}` : '',\n  coverPalette.length ? `Paleta desejada: ${coverPalette.join(', ')}` : '',\n  frontmatter.introduction?.blocks?.length ? `## Introducao\\n\\n${renderBlocks(frontmatter.introduction.blocks)}` : '',\n  toc.length ? `## Estrutura da obra\\n\\n${toc.map((item, index) => `${index + 1}. ${safe(item.title)}`).join('\\n')}` : '',\n  chapterSections,\n  backmatter.conclusion?.blocks?.length ? `## Conclusao\\n\\n${renderBlocks(backmatter.conclusion.blocks)}` : '',\n  backmatter.cta?.title ? `## CTA Final\\n\\n${safe(backmatter.cta.title)}\\n\\n${safe(backmatter.cta.description)}\\n\\nAcao sugerida: ${safe(backmatter.cta.action)}` : '',\n  backmatter.about_author?.text ? `## Sobre o estudio\\n\\n${safe(backmatter.about_author.text)}` : '',\n  chapterImagePrompts.length ? `## Plano de imagens\\n\\n${chapterImagePrompts.join('\\n')}` : '',\n  chapterVisualElements.length ? `## Motivos visuais recorrentes\\n\\n${chapterVisualElements.join('\\n')}` : '',\n  longEditorialNotes ? `## Diretrizes editoriais e visuais\\n\\n${longEditorialNotes}` : ''\n].filter(Boolean).join('\\n\\n');\n\nconst compactInstructions = [\n  'Crie um document em pt-BR com sensacao editorial premium e acabamento autoral.',\n  `Genero e forma: ${truncate(bookStyle, 140)}.`,\n  requestedColor ? `Direcao cromatica: ${truncate(requestedColor, 160)}.` : 'Escolha uma paleta tematica original e evite azul generico por padrao.',\n  coverPosture ? `Postura da capa: ${truncate(coverPosture, 180)}.` : '',\n  openingTexture ? `Textura de abertura dos capitulos: ${truncate(openingTexture, 180)}.` : '',\n  faithRegister ? `Registro espiritual: ${truncate(faithRegister, 180)}.` : '',\n  sacredLanguageIntensity ? `Nivel de reverencia: ${truncate(sacredLanguageIntensity, 120)}.` : '',\n  `Use imagens com funcao narrativa e atmosferica. Densidade: ${truncate(imageDensity, 80)}.`,\n  estimatedImageCount ? `Busque aproximadamente ${estimatedImageCount} imagens relevantes.` : 'Decida autonomamente a quantidade ideal de imagens.',\n  imageStyle ? `Estilo de imagem: ${truncate(imageStyle, 220)}.` : '',\n  themeHint ? `Direcao visual: ${truncate(themeHint, 160)}.` : '',\n  tone ? `Tom: ${truncate(tone, 180)}.` : '',\n  'Nao transforme o material em landing page; preserve identidade de livro/documento editorial.'\n].filter(Boolean).join(' ');\n\nconst gammaBody = {\n  inputText,\n  textMode,\n  format: safe(gamma.format, 'document'),\n  cardSplit: 'inputTextBreaks',\n  additionalInstructions: compactInstructions,\n  cardOptions: {\n    dimensions\n  },\n  imageOptions: {\n    source: 'aiGenerated',\n    model: imageModel,\n    stylePreset,\n    style: imageStyle\n  }\n};\n\nif (textMode !== 'preserve') {\n  gammaBody.textOptions = {\n    amount,\n    language: 'pt-br'\n  };\n}\n\nreturn [{\n  json: {\n    gammaBody,\n    gammaPreview: {\n      title,\n      audience: safe(gamma.audience, targetAudience),\n      tone,\n      theme_hint: themeHint,\n      chapters: chapters.length,\n      chapter_count_target: chapterCountTarget,\n      book_style: bookStyle,\n      content_density: contentDensity,\n      text_mode: textMode,\n      amount,\n      dimensions,\n      chars: inputText.length,\n      palette: coverPalette,\n      requested_color: requestedColor,\n      image_density: imageDensity,\n      estimated_image_count: estimatedImageCount,\n      image_prompts: chapterImagePrompts.length,\n      image_style: imageStyle,\n      image_model: imageModel,\n      image_style_preset: stylePreset,\n      faith_register: faithRegister,\n      sacred_language_intensity: sacredLanguageIntensity,\n      additional_instructions_chars: compactInstructions.length\n    }\n  }\n}];"
+      },
+      "id": "02136d00-0764-47d0-8f17-4ba4b5ae0ac7",
+      "type": "n8n-nodes-base.code",
+      "name": "Gamma Payload Builder Raw",
+      "position": [
+        1632,
+        272
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://public-api.gamma.app/v1.0/generations",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            },
+            {
+              "name": "X-API-KEY",
+              "value": "={{ $env.GAMMA_API_KEY || \"sk-gamma-substituir\" }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ JSON.stringify($json.gammaBody) }}",
+        "options": {
+          "timeout": 900000
+        }
+      },
+      "id": "2b3a6c21-ac9a-4da1-b20d-b7d26e0aae58",
+      "type": "n8n-nodes-base.httpRequest",
+      "name": "Gamma Generate Direct",
+      "position": [
+        1792,
+        272
+      ],
+      "typeVersion": 4.3,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "8MIdiVwMnq8J2Prt",
+          "name": "gamma"
+        },
+        "httpQueryAuth": {
+          "id": "caLEj16G0CrGCNXU",
+          "name": "Query Auth account"
+        },
+        "httpBearerAuth": {
+          "id": "CDdseaxqI1DwZCRK",
+          "name": "Bearer Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const ebook = $('Parse Ebook Raw').first().json;\nconst knowledgePack = $('Knowledge Pack Builder').first().json;\n\nconst body = {\n  model: 'gpt-5.4-mini',\n\n  response_format: { type: 'json_object' },\n  messages: [\n    {\n      role: 'system',\n      content: `Voce e um arquiteto de agentes conversacionais para infoprodutos digitais.\nSua tarefa e analisar um ebook e seu knowledge pack para gerar uma configuracao universal de agente WhatsApp, dinamica e reutilizavel para qualquer tema.\n\nOBJETIVO:\nGerar um JSON com duas chaves:\n1. agent_profile\n2. whatsapp_config\n\nREGRAS:\n- Basear tudo no ebook fornecido\n- Nao assumir um nicho fixo\n- Derivar tema, tom, limites, estilo de acompanhamento e logica de check-in a partir do conteudo\n- Se o tema for sensivel, incluir guardrails apropriados\n- A configuracao deve servir para um agente premium, pessoal, contextual e vendavel\n- O agente deve usar memoria do usuario e o conteudo do ebook como ancora principal\n- O agente nao deve agir como medico, advogado, terapeuta ou consultor financeiro quando isso nao for apropriado\n- O agente deve poder funcionar tanto de forma reativa quanto proativa\n\nESTRUTURA OBRIGATORIA:\n{\n  \"agent_profile\": {\n    \"product_id\": \"\",\n    \"ebook_theme\": \"\",\n    \"ebook_title\": \"\",\n    \"ebook_subtitle\": \"\",\n    \"core_promise\": \"\",\n    \"target_audience\": \"\",\n    \"tone\": \"\",\n    \"transformation\": \"\",\n    \"checkin_style\": \"\",\n    \"recommended_message_types\": [\"\"],\n    \"topic_boundaries\": [\"\"],\n    \"dos\": [\"\"],\n    \"donts\": [\"\"],\n    \"content_signals\": {\n      \"total_chapters\": 0,\n      \"emotional_goals\": [\"\"],\n      \"chapter_purposes\": [\"\"],\n      \"visual_elements\": [\"\"]\n    },\n    \"onboarding_goal\": \"\",\n    \"upsell_positioning\": \"\"\n  },\n  \"whatsapp_config\": {\n    \"channel\": \"whatsapp\",\n    \"product_name\": \"\",\n    \"onboarding_questions\": [\"\"],\n    \"memory_fields\": [\"\"],\n    \"message_types\": [\"\"],\n    \"proactive_rules\": {\n      \"min_hours_between_messages\": 24,\n      \"max_messages_per_week\": 3,\n      \"require_opt_in\": true,\n      \"respect_contact_window\": true,\n      \"avoid_randomness_without_reason\": true,\n      \"preferred_triggers\": [\"\"]\n    },\n    \"reply_style_rules\": [\"\"],\n    \"safety_rules\": [\"\"]\n  }\n}\n\nRetorne apenas JSON valido.`\n    },\n    {\n      role: 'user',\n      content: `EBOOK:\\n${JSON.stringify(ebook)}\\n\\nKNOWLEDGE_PACK:\\n${JSON.stringify(knowledgePack)}`\n    }\n  ]\n};\n\nreturn [{ json: { body } }];"
+      },
+      "id": "0e0a798a-f268-49f5-8854-d142eed2c81e",
+      "type": "n8n-nodes-base.code",
+      "name": "Agent Brain Prompt Builder",
+      "position": [
+        1760,
+        592
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "const ebook = $json || {};\nconst safe = (value, fallback = '') => value === undefined || value === null ? fallback : value;\nconst safeArr = (value) => Array.isArray(value) ? value : [];\n\nconst meta = ebook.meta || {};\nconst body = ebook.body || {};\nconst backmatter = ebook.backmatter || {};\nconst chapters = safeArr(body.chapters);\n\nconst blockToText = (block = {}) => {\n  const type = safe(block.type, 'paragraph');\n  if ((type === 'checklist' || type === 'comparison') && Array.isArray(block.items)) {\n    return block.items.join(' | ');\n  }\n  return safe(block.content);\n};\n\nconst exerciseHints = ['checklist', 'example', 'warning', 'insight'];\nconst protocolKeywords = ['respirar', 'pausa', 'roteiro', 'passo', 'protocolo', 'exercicio', 'reflexao'];\n\nconst chapterObjects = chapters.map((chapter, index) => {\n  const blocks = safeArr(chapter.blocks);\n  const summary = blocks.map(blockToText).filter(Boolean).slice(0, 4).join(' ');\n\n  const exercises = blocks\n    .filter((block) => exerciseHints.includes(safe(block.type)) || protocolKeywords.some((kw) => blockToText(block).toLowerCase().includes(kw)))\n    .map((block, blockIndex) => ({\n      id: `${safe(chapter.anchor, `cap-${index + 1}`)}-exercise-${blockIndex + 1}`,\n      title: `${safe(chapter.title, `Capitulo ${index + 1}`)} - exercicio ${blockIndex + 1}`,\n      source_block_type: safe(block.type),\n      instruction: blockToText(block)\n    }))\n    .filter((item) => item.instruction);\n\n  return {\n    id: safe(chapter.anchor, `cap-${index + 1}`),\n    order: index + 1,\n    title: safe(chapter.title, `Capitulo ${index + 1}`),\n    purpose: safe(chapter.purpose),\n    emotional_goal: safe(chapter.emotional_goal),\n    summary,\n    recommendation_triggers: [safe(chapter.emotional_goal), safe(chapter.purpose)].filter(Boolean),\n    exercises,\n    visual_elements: safeArr(chapter.design?.visual_elements),\n    image_suggestions: safeArr(chapter.design?.image_suggestions)\n  };\n});\n\nconst protocols = chapterObjects.flatMap((chapter) => chapter.exercises.map((exercise) => ({\n  id: exercise.id,\n  chapter_id: chapter.id,\n  goal: chapter.emotional_goal || chapter.purpose || 'aplicacao pratica',\n  instruction: exercise.instruction\n})));\n\nconst faq = [\n  {\n    question: 'Qual capitulo indicar quando o usuario estiver travado?',\n    answer: 'Indique o capitulo cuja meta emocional ou proposito mais combine com a dor atual relatada.'\n  },\n  {\n    question: 'Quando sugerir exercicio?',\n    answer: 'Quando houver carga emocional alta, confusao, travamento ou necessidade de acao pratica curta.'\n  }\n];\n\nconst conclusionText = safeArr(backmatter.conclusion?.blocks).map(blockToText).filter(Boolean).join(' ');\n\nreturn [{\n  json: {\n    ebook_title: safe(meta.title, 'Ebook'),\n    chapters: chapterObjects,\n    protocols,\n    faq,\n    conclusion_summary: conclusionText,\n    recommendation_rules: [\n      'se o usuario estiver emocionalmente sobrecarregado, priorize protocolo ou exercicio curto',\n      'se o usuario pedir clareza, indique um capitulo e uma pergunta de reflexao',\n      'se o usuario estiver sem energia, entregue apenas um proximo passo simples'\n    ]\n  }\n}];"
+      },
+      "id": "f9aa1b6c-c9cd-43c8-b809-da822bb362fd",
+      "type": "n8n-nodes-base.code",
+      "name": "Knowledge Pack Builder",
+      "position": [
+        1520,
+        592
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $json.choices?.[0]?.message?.content;\nif (!raw) throw new Error('Sem content do OpenAI para Agent Brain');\n\nlet parsed;\ntry {\n  parsed = JSON.parse(raw);\n} catch (error) {\n  throw new Error('JSON invalido no Agent Brain');\n}\n\nif (!parsed.agent_profile || !parsed.whatsapp_config) {\n  throw new Error('Agent Brain sem agent_profile ou whatsapp_config');\n}\n\nreturn [{\n  json: {\n    agent_profile: parsed.agent_profile,\n    whatsapp_config: parsed.whatsapp_config\n  }\n}];"
+      },
+      "id": "ab766385-329a-4431-bf25-0fa0d3d86b3b",
+      "type": "n8n-nodes-base.code",
+      "name": "Parse Agent Brain Output",
+      "position": [
+        2176,
+        592
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "const ebook = $('Parse Ebook Raw').first().json;\nconst knowledgePack = $('Knowledge Pack Builder').first().json;\nconst agentBrain = $('Parse Agent Brain Output').first().json;\n\nreturn [{\n  json: {\n    product_brain_version: 'v2-llm',\n    generated_at: new Date().toISOString(),\n    ebook,\n    agent_profile: agentBrain.agent_profile,\n    knowledge_pack: knowledgePack,\n    whatsapp_config: agentBrain.whatsapp_config,\n    prompt_base: {\n      role: 'acompanhante digital premium do ebook',\n      rules: [\n        'usar memoria do usuario',\n        'usar o conteudo do ebook como base principal',\n        'recomendar capitulos, exercicios e protocolos quando fizer sentido',\n        'nao inventar fatos fora do material',\n        'nao agir como medico, advogado ou terapeuta'\n      ],\n      output_schema: {\n        reply_text: '',\n        suggested_action: '',\n        chapter_recommendation: { id: '', reason: '' },\n        exercise_recommendation: { id: '', reason: '' },\n        memory_update: {},\n        risk_assessment: 'low'\n      }\n    }\n  }\n}];"
+      },
+      "id": "cf5dbe80-4ba9-4724-b7ef-c0853788c3ac",
+      "type": "n8n-nodes-base.code",
+      "name": "Merge Product Brain",
+      "position": [
+        2416,
+        592
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "operation": "toJson",
+        "binaryPropertyName": "=",
+        "options": {
+          "fileName": "product-brain.json"
+        }
+      },
+      "id": "51887629-7b74-4a86-8566-67117b4b3a4c",
+      "type": "n8n-nodes-base.convertToFile",
+      "name": "Convert Product Brain to File",
+      "position": [
+        2896,
+        592
+      ],
+      "typeVersion": 1.1
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $('Agent Brain Prompt Builder').item.json.body }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 20,
+              "batchInterval": 3000
+            }
+          },
+          "timeout": 900000
+        }
+      },
+      "id": "778f5005-574d-4eca-8a4b-3d0690306771",
+      "type": "n8n-nodes-base.httpRequest",
+      "retryOnFail": false,
+      "name": "OpenAI Agent Brain",
+      "waitBetweenTries": 5000,
+      "maxTries": 2,
+      "position": [
+        1968,
+        592
+      ],
+      "typeVersion": 4.3,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lgluxaKyQWdfkFYp",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $('Load User Input').first().json;\nconst userRaw = $('Supabase Upsert User').first().json;\nconst ebookRaw = $('Supabase Load Ebook Brain').first().json;\nconst memoryRaw = $('Supabase Load User Memory').first().json;\nconst fallbackBrain = $('Merge Product Brain').first().json;\nconst firstRecord = (raw) => Array.isArray(raw) ? (raw[0] || null) : (raw || null);\nconst safe = (value, fallback = '') => value === undefined || value === null ? fallback : value;\nconst userRecord = firstRecord(userRaw) || {};\nconst ebookRecord = firstRecord(ebookRaw) || {};\nconst memoryRecord = firstRecord(memoryRaw);\nconst productBrain = ebookRecord.product_brain_json || fallbackBrain;\nconst userId = safe(userRecord.id, safe(input.user_id, 'user-demo'));\nconst ebookId = safe(ebookRecord.id, 'ebook-demo');\nconst lastUserMessage = safe(input.last_user_message, 'Quero ajuda para aplicar o ebook na minha rotina.');\nconst defaultMemory = { user_id: userId, ebook_id: ebookId, profile: { name: safe(userRecord.name, safe(input.user_name, 'Cliente')), timezone: safe(userRecord.timezone, safe(input.timezone, 'America/Sao_Paulo')), frequency_preference: safe(userRecord.frequency_preference, safe(input.frequency_preference, 'moderada')), proactive_opt_in: userRecord.proactive_opt_in !== false, contact_window: { start: safe(userRecord.contact_start, safe(input.contact_start, '09:00')), end: safe(userRecord.contact_end, safe(input.contact_end, '20:00')) } }, state: { current_stage: safe(input.current_stage, 'inicio'), current_emotion: safe(input.current_emotion, ''), main_pain: safe(input.main_pain, ''), goal_now: safe(input.goal_now, ''), risk_level: safe(input.risk_level, 'low') }, journey: { chapters_recommended: input.chapters_recommended || [], exercises_suggested: input.exercises_suggested || [], open_loops: input.open_loops || [] }, conversation_memory: { rolling_summary: safe(input.rolling_summary, ''), last_user_message: lastUserMessage, last_agent_message: safe(input.last_agent_message, '') } };\nconst resolvedMemory = memoryRecord ? { user_id: userId, ebook_id: ebookId, profile: memoryRecord.profile_json || defaultMemory.profile, state: { current_stage: safe(memoryRecord.current_stage, defaultMemory.state.current_stage), current_emotion: safe(memoryRecord.current_emotion, defaultMemory.state.current_emotion), main_pain: safe(memoryRecord.main_pain, defaultMemory.state.main_pain), goal_now: safe(memoryRecord.goal_now, defaultMemory.state.goal_now), risk_level: safe(memoryRecord.risk_level, defaultMemory.state.risk_level) }, journey: memoryRecord.journey_json || defaultMemory.journey, conversation_memory: { rolling_summary: safe(memoryRecord.rolling_summary, defaultMemory.conversation_memory.rolling_summary), last_user_message: lastUserMessage, last_agent_message: safe(input.last_agent_message, defaultMemory.conversation_memory.last_agent_message) } } : defaultMemory;\nreturn [{ json: { interaction_mode: safe(input.interaction_mode, 'reactive'), user_id: userId, ebook_id: ebookId, product_brain: productBrain, user_memory: resolvedMemory, last_user_message: lastUserMessage, whatsapp_number: safe(input.whatsapp_number, safe(userRecord.whatsapp_number, '')) } }];"
+      },
+      "id": "1a084555-7f69-4bf5-9d7f-7b7948469433",
+      "type": "n8n-nodes-base.code",
+      "name": "Memory Resolver",
+      "position": [
+        2896,
+        816
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "const input = $('Memory Resolver').first().json;\nconst productBrain = input.product_brain || $('Merge Product Brain').first().json;\nconst userMemory = input.user_memory || {};\nconst lastUserMessage = input.last_user_message || '';\nconst interactionMode = input.interaction_mode || 'reactive';\nconst body = { model: 'gpt-5.4-mini', response_format: { type: 'json_object' }, messages: [ { role: 'system', content: `Voce e um acompanhante digital premium baseado em um ebook. Ajude o usuario a aplicar o conteudo com personalizacao, clareza e memoria. Use product brain e memoria. Nao invente fatos. Nao aja como medico, advogado, terapeuta ou consultor financeiro. Retorne apenas JSON valido com reply_text, suggested_action, chapter_recommendation, exercise_recommendation, memory_update e risk_assessment.` }, { role: 'user', content: `INTERACTION_MODE:\\n${interactionMode}\\n\\nPRODUCT_BRAIN:\\n${JSON.stringify(productBrain)}\\n\\nUSER_MEMORY:\\n${JSON.stringify(userMemory)}\\n\\nLAST_USER_MESSAGE:\\n${lastUserMessage}` } ] };\nreturn [{ json: { body } }];"
+      },
+      "id": "6143122e-1bcb-4852-b76a-de8e0e356bc5",
+      "type": "n8n-nodes-base.code",
+      "name": "Agent Reply Prompt Builder",
+      "position": [
+        3136,
+        816
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.openai.com/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "raw",
+        "rawContentType": "application/json",
+        "body": "={{ $('Agent Reply Prompt Builder').item.json.body }}",
+        "options": {
+          "batching": {
+            "batch": {
+              "batchSize": 20,
+              "batchInterval": 3000
+            }
+          },
+          "timeout": 900000
+        }
+      },
+      "id": "29233e70-c83c-473b-96ef-bfea898527a9",
+      "type": "n8n-nodes-base.httpRequest",
+      "retryOnFail": false,
+      "name": "OpenAI Agent Reply",
+      "waitBetweenTries": 5000,
+      "maxTries": 2,
+      "position": [
+        3376,
+        816
+      ],
+      "typeVersion": 4.3,
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "lgluxaKyQWdfkFYp",
+          "name": "Header Auth account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "const raw = $json.choices?.[0]?.message?.content;\nif (!raw) throw new Error('Sem content do OpenAI para Agent Reply');\n\nlet parsed;\ntry {\n  parsed = JSON.parse(raw);\n} catch (error) {\n  throw new Error('JSON invalido no Agent Reply');\n}\n\nreturn [{ json: parsed }];"
+      },
+      "id": "f862a853-b7f2-4a05-9224-677ecf5ca46f",
+      "type": "n8n-nodes-base.code",
+      "name": "Parse Agent Reply",
+      "position": [
+        3616,
+        816
+      ],
+      "typeVersion": 2
+    },
+    {
+      "parameters": {
+        "jsCode": "const brain = $('Merge Product Brain').first().json;\nconst input = $json || {};\nconst safe = (value, fallback = '') => value === undefined || value === null ? fallback : value;\nreturn [{ json: { product_id: safe(input.product_id, brain.agent_profile?.product_id || ''), whatsapp_number: safe(input.whatsapp_number, '+5500000000000'), user_name: safe(input.user_name, 'Cliente'), last_user_message: safe(input.last_user_message, 'Quero ajuda para aplicar o ebook na minha rotina.'), interaction_mode: safe(input.interaction_mode, 'reactive'), timezone: safe(input.timezone, 'America/Sao_Paulo'), frequency_preference: safe(input.frequency_preference, 'moderada'), proactive_opt_in: input.proactive_opt_in !== false, contact_start: safe(input.contact_start, '09:00'), contact_end: safe(input.contact_end, '20:00'), current_stage: safe(input.current_stage, 'inicio'), current_emotion: safe(input.current_emotion, ''), main_pain: safe(input.main_pain, ''), goal_now: safe(input.goal_now, ''), risk_level: safe(input.risk_level, 

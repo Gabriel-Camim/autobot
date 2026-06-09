@@ -1,0 +1,38 @@
+Gabriel Camim Santos
+IA Generativa | Dados | Automação | RevOps | Arquitetura de Sistemas
+São Paulo - SP | camim2003@gmail.com | LinkedIn: Gabriel Camim | Tel.: (11) 95804-8353
+RESUMO PROFISSIONAL
+Profissional de tecnologia com formação técnica em Informática, experiência em suporte a sistemas críticos, ERP, PDV e ambientes de produção. Minha trajetória combina vivência operacional em sistemas reais com desenvolvimento autoral em IA generativa, dados, automação, RevOps e arquitetura de sistemas, sempre com foco em transformar problemas complexos em soluções práticas, estruturadas e aplicáveis ao negócio.
+Atuo na interseção entre visão de produto, dados, engenharia e automação, desenvolvendo projetos com LLMs, agentes, APIs, JSON estruturado, n8n, SQL, PostgreSQL, Vercel, GitHub e desenvolvimento assistido por IA. Tenho perfil analítico, autodidata e construtor, com forte interesse em criar sistemas inteligentes, automatizar processos, estruturar dados e gerar impacto real em operações, decisões e crescimento de negócios.
+COMPETÊNCIAS TÉCNICAS
+PROJETOS TÉCNICOS AUTORAIS
+DGE - Data Growth Engine | IA, dados, e-commerce e inteligência operacional | 2026 - atual
+• Sistema autoral para governança e implantação de e-commerce orientado por dados, estruturando marketplaces, Bling, ERP, produtos, SKUs, pedidos, estoque, preços, compras, frete, canais próprios e fulfillment.
+• Arquitetura separando ERP Core da camada de inteligência operacional, com KPIs, fórmulas, projeções, memória operacional, lineage, variâncias, impacto projetivo, exceções e reforecast governado.
+• Desenvolvimento com JavaScript, SQL, PostgreSQL, modelagem de schemas, banco multitenant, autenticação, permissões, APIs internas, GitHub, Vercel, OpenAI, Codex e desenvolvimento assistido por IA.
+Ebook Generator | Automação editorial com LLMs, n8n, APIs e IA aplicada a marketing | 2026
+• Workflow autoral em n8n com OpenAI API, Gamma API e JSON estruturado para transformar briefing em blueprint editorial, conteúdo final, payload visual e product brain reutilizável.
+• Pipeline com prompts encadeados, papéis especializados, parsing, tratamento de erros, normalização, organização semântica, análise de mercado, CRM/persona, roadmap, marketing e base para agentes conversacionais.
+DiagnósIA, VetDex, VDC e Córtex Digital | Pesquisa, dados e IA aplicada à Medicina Veterinária | 2024 - 2025
+• Projetos criados durante a graduação em Medicina Veterinária, voltados à IA aplicada, modelagem de conhecimento, dados clínicos, classificação multieixo, sistemas de apoio à decisão e ensino assistido por IA.
+• Estruturação de entidades nosológicas, eixos clínicos, modificadores, metadados, vocabulários controlados, codificação alfanumérica, filtros multieixo, modelagem relacional e preparação para RAG, busca semântica, fine-tuning e modelos preditivos.
+EXPERIÊNCIA PROFISSIONAL
+Analista de Suporte Jr - Software Show / Cacau Show | Jan/2025 - Jan/2025
+• Suporte aos sistemas Master Retail PDV e Master Retail Desktop utilizados por franquias da Cacau Show, uma das maiores redes de franquias do país, com foco em estabilidade operacional, emissão fiscal, pagamentos e continuidade de loja.
+• Atuação em ERP/retaguarda e frente de caixa: rotinas administrativas, cadastros, controle de loja, operações fiscais, vendas, pagamentos e integração com o ambiente de PDV.
+• Diagnóstico de falhas em produção, reprodução de problemas, chamados, incidentes e integrações com TEF, SAT, pinpads, impressoras térmicas, totens e chamadores de senha.
+Analista de Suporte Jr - Spread Tecnologia / Hospital Israelita Albert Einstein | Ago/2021 - Fev/2023
+• Atuação em ambiente hospitalar de alta criticidade, iniciando em rollout de parque computacional e evoluindo para formatação, configuração, instalação de sistemas e preparação de estações Windows.
+• Desenvolvimento de automação em .bat para executar instalações e configurações padronizadas, posteriormente adotada pela equipe de suporte para acelerar o fluxo operacional.
+• Atuação em Field Service e Service Desk N2 remoto, com suporte a usuários, hardware, software, sistemas corporativos e infraestrutura, usando Active Directory, SCCM, Cisco ACS, Cisco ISE e ITSM.
+FORMAÇÃO, CURSOS E IDIOMAS
+• Data Science - FIAP | Jul/2026 - Dez/2028 (previsão).
+• Medicina Veterinária - UNISA | Fev/2023 - Set/2025 (incompleta); domínio aplicado para projetos de IA, dados, classificação de doenças e modelagem de conhecimento.
+• Ensino Médio Técnico em Informática - ETEC Adhemar Batista Heméritas | 2018 - 2020; lógica de programação, análise de sistemas, desenvolvimento de software, programação orientada a objetos, banco de dados, redes, manutenção, sistemas operacionais, mobilidade, empreendedorismo e inovação.
+• Cursos: UX Design de A a Z - Udemy; UI Design com Figma: do zero ao especialista - Udemy. Inglês: leitura fluente, escrita avançada e conversação avançada.
+Eixo | Competências e ferramentas
+IA generativa e LLMs | OpenAI, Claude, LangChain, engenharia de prompts, agentes, structured outputs, tool calling, RAG/RAI, guardrails, avaliação de respostas, memória e orquestração de modelos.
+Dados e analytics | SQL, PostgreSQL, modelagem relacional, schemas, KPIs, projeções, forecast/reforecast, Power BI, Superset, governança, lineage, rastreabilidade, documentação de métricas e análise operacional.
+Automação e integrações | n8n, Claude, APIs REST, JSON, webhooks, OpenAI API, Gamma API, parsing de respostas, tratamento de erros, pipelines de dados textuais, integrações entre ferramentas e workflows operacionais.
+Desenvolvimento e arquitetura | JavaScript, Python, HTML/CSS, GitHub, Visual Studio Code, Vercel, Docker, backend, APIs internas, arquitetura modular, autenticação, permissões, CI/CD, banco multitenant, Codex e Abacus AI.
+Marketing digital e RevOps | CRM, ICP, funil comercial, B2B/B2C, lead scoring, automações de captação, dados para conversão de receita, análise de campanhas, product brain, integração com checkout de pagamentos e inteligência de crescimento.
