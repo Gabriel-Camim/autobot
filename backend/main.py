@@ -1,0 +1,248 @@
+from __future__ import annotations
+
+import json
+import logging
+import time
+import zipfile
+from io import BytesIO
+from typing import List, Optional
+from uuid import uuid4
+
+from fastapi import FastAPI, File, Form, Request, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel, Field
+
+from agent import AppError, answer_question
+from config import get_settings
+from voice import synthesize_speech_base64, transcribe_upload
+
+
+settings = get_settings()
+
+logging.basicConfig(level=logging.INFO, format="%(message)s")
+logger = logging.getLogger("gabriel_api")
+
+app = FastAPI(title="Gabriel Portfolio Agent", version="0.1.0")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.frontend_origin_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+class SourceSummaryResponse(BaseModel):
+    title: str
+    category: str
+    summary: str
+    source: str
+    tags: List[str] = Field(default_factory=list)
+
+
+class ChatRequest(BaseModel):
+    message: str
+    session_id: Optional[str] = None
+    active_node: Optional[str] = None
+
+
+class ChatResponse(BaseModel):
+    session_id: str
+    answer: str
+    detected_language: str
+    sources_summary: List[SourceSummaryResponse]
+    usage: dict
+
+
+class TranscriptionResponse(BaseModel):
+    transcript: str
+
+
+class ReportResponse(BaseModel):
+    node_id: str
+    title: str
+    content: str
+
+
+class VoiceChatResponse(ChatResponse):
+    transcript: str
+    audio_base64: Optional[str] = None
+    audio_mime_type: str = "audio/mpeg"
+    tts_error: Optional[str] = None
+
+
+@app.middleware("http")
+async def request_logging(request: Request, call_next):
+    request_id = request.headers.get("x-request-id", str(uuid4()))
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    except Exception:
+        status_code = 500
+        raise
+    finally:
+        elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
+        logger.info(
+            json.dumps(
+                {
+                    "request_id": request_id,
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status_code": status_code,
+                    "latency_ms": elapsed_ms,
+                },
+                ensure_ascii=True,
+            )
+        )
+
+
+@app.exception_handler(AppError)
+async def app_error_handler(_request: Request, exc: AppError):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"code": exc.code, "message": exc.message},
+    )
+
+
+@app.get("/health")
+def health():
+    return {
+        "status": "ok",
+        "openai_configured": bool(settings.openai_api_key),
+        "chroma_dir": str(settings.resolved_chroma_dir),
+        "chroma_exists": settings.resolved_chroma_dir.exists(),
+        "knowledge_dir": str(settings.resolved_knowledge_dir),
+        "knowledge_exists": settings.resolved_knowledge_dir.exists(),
+    }
+
+
+def _parse_report(raw: str) -> tuple[str, str]:
+    if raw.startswith("---"):
+        parts = raw.split("---", 2)
+        if len(parts) == 3:
+            raw = parts[2].strip()
+    title = "Relatório"
+    for line in raw.splitlines():
+        if line.startswith("# "):
+            title = line.removeprefix("# ").strip()
+            break
+    return title, raw
+
+
+@app.get("/reports/{node_id}", response_model=ReportResponse)
+def node_report(node_id: str):
+    allowed = {"gabriel", "trajetoria", "projetos", "stack", "experiencia", "mercado", "entrevista", "materiais"}
+    if node_id not in allowed:
+        raise AppError(code="report_not_found", message="Relatório não encontrado.", status_code=404)
+
+    reports_dir = settings.resolved_knowledge_dir / "reports"
+    report_path = (reports_dir / f"{node_id}.md").resolve()
+    if reports_dir.resolve() not in report_path.parents or not report_path.exists():
+        raise AppError(code="report_not_found", message="Relatório não encontrado.", status_code=404)
+
+    title, content = _parse_report(report_path.read_text(encoding="utf-8"))
+    return ReportResponse(node_id=node_id, title=title, content=content)
+
+
+@app.post("/chat", response_model=ChatResponse)
+def chat(payload: ChatRequest):
+    result = answer_question(
+        message=payload.message,
+        session_id=payload.session_id,
+        active_node=payload.active_node,
+        settings=settings,
+    )
+    return ChatResponse(
+        session_id=result.session_id,
+        answer=result.answer,
+        detected_language=result.detected_language,
+        sources_summary=[SourceSummaryResponse(**source.__dict__) for source in result.sources],
+        usage=result.usage,
+    )
+
+
+@app.post("/voice/transcribe", response_model=TranscriptionResponse)
+async def voice_transcribe(file: UploadFile = File(...)):
+    transcript = await transcribe_upload(file, settings=settings)
+    if not transcript:
+        raise AppError(
+            code="empty_transcript",
+            message="Não consegui identificar fala no áudio enviado.",
+            status_code=422,
+        )
+    return TranscriptionResponse(transcript=transcript)
+
+
+@app.post("/voice/chat", response_model=VoiceChatResponse)
+async def voice_chat(
+    file: UploadFile = File(...),
+    session_id: Optional[str] = Form(default=None),
+    active_node: Optional[str] = Form(default=None),
+):
+    transcript = await transcribe_upload(file, settings=settings)
+    if not transcript:
+        raise AppError(
+            code="empty_transcript",
+            message="Não consegui identificar fala no áudio enviado.",
+            status_code=422,
+        )
+
+    result = answer_question(
+        message=transcript,
+        session_id=session_id,
+        active_node=active_node,
+        settings=settings,
+    )
+
+    audio_base64 = None
+    tts_error = None
+    try:
+        audio_base64 = synthesize_speech_base64(result.answer, settings=settings)
+    except AppError as exc:
+        tts_error = exc.message
+
+    return VoiceChatResponse(
+        session_id=result.session_id,
+        transcript=transcript,
+        answer=result.answer,
+        detected_language=result.detected_language,
+        sources_summary=[SourceSummaryResponse(**source.__dict__) for source in result.sources],
+        usage=result.usage,
+        audio_base64=audio_base64,
+        tts_error=tts_error,
+    )
+
+
+@app.get("/materials/extract-gabriel")
+def extract_gabriel():
+    materials_dir = settings.resolved_materials_dir
+    if not materials_dir.exists():
+        raise AppError(
+            code="materials_missing",
+            message="O pacote recrutador ainda não foi configurado.",
+            status_code=404,
+        )
+
+    files = [path for path in materials_dir.rglob("*") if path.is_file()]
+    if not files:
+        raise AppError(
+            code="materials_empty",
+            message="O pacote recrutador está vazio.",
+            status_code=404,
+        )
+
+    archive = BytesIO()
+    with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
+        for path in files:
+            zip_file.write(path, arcname=path.relative_to(materials_dir).as_posix())
+    archive.seek(0)
+
+    return StreamingResponse(
+        archive,
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="extrair-gabriel.zip"'},
+    )
