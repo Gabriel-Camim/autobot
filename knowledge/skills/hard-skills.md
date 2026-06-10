@@ -1,0 +1,37 @@
+---
+title: Hard skills
+category: skills
+tags:
+- hard-skills
+- python
+- sql
+- llm
+- automacao
+- dados
+visibility: public
+priority: 1
+updated_at: '2026-06-09'
+summary: Competências técnicas consolidadas a partir do currículo.
+---
+
+# Hard skills
+
+## IA generativa e LLMs
+
+OpenAI, Claude, LangChain, engenharia de prompts, agentes, structured outputs, tool calling, RAG, guardrails, avaliação de respostas, memória, orquestração de modelos e desenvolvimento assistido por IA com Codex e Abacus AI.
+
+## Dados e analytics
+
+SQL, PostgreSQL, modelagem relacional, schemas, KPIs, projeções, forecast/reforecast, governança de dados, lineage, rastreabilidade, documentação de métricas, análise operacional, Power BI e Superset.
+
+## Automação e integrações
+
+n8n, APIs REST, webhooks, JSON, OpenAI API, Gamma API, parsing de respostas, tratamento de erros, pipelines de dados textuais, integrações entre ferramentas e workflows operacionais.
+
+## Desenvolvimento e arquitetura
+
+JavaScript, Python, HTML/CSS, GitHub, Visual Studio Code, Vercel, Docker, backend, APIs internas, arquitetura modular, autenticação, permissões, CI/CD e banco multitenant.
+
+## Marketing digital e RevOps
+
+CRM, ICP, funil comercial, B2B/B2C, lead scoring, automações de captação, dados para conversão de receita, análise de campanhas, product brain, checkout de pagamentos e inteligência de crescimento.
