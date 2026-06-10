@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     materials_dir: Path = Field(default=Path("../materials/recruiter-pack"), alias="MATERIALS_DIR")
 
     frontend_origins: str = Field(
-        default="http://localhost:5173,http://127.0.0.1:5173",
+        default="https://autobot-7hvv.onrender.com",
         alias="FRONTEND_ORIGINS",
     )
     max_upload_mb: int = Field(default=25, alias="MAX_UPLOAD_MB")
