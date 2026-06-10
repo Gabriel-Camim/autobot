@@ -22,7 +22,7 @@ class Settings(BaseSettings):
     materials_dir: Path = Field(default=Path("../materials/recruiter-pack"), alias="MATERIALS_DIR")
 
     frontend_origins: str = Field(
-        default="https://autobot-7hvv.onrender.com",
+        default="https://frontend-nbecvxa81-camim2003-1759s-projects.vercel.app",
         alias="FRONTEND_ORIGINS",
     )
     max_upload_mb: int = Field(default=25, alias="MAX_UPLOAD_MB")
