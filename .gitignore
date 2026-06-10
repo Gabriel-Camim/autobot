@@ -1,0 +1,13 @@
+.env
+.venv/
+venv/
+__pycache__/
+.pytest_cache/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+chroma/
+.chroma/
+tmp/
