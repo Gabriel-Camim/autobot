@@ -37,3 +37,21 @@ def test_log_event_and_summary(tmp_path: Path):
     assert summary["visits"] == 1
     assert summary["identified_visitors"] == 1
     assert summary["chat_exchanges"] == 1
+
+
+def test_invalid_database_url_returns_storage_diagnostic(tmp_path: Path):
+    settings = Settings(
+        _env_file=None,
+        DATA_DIR=tmp_path,
+        EVENTS_DB_PATH=tmp_path / "events.sqlite3",
+        DATABASE_URL="https://dashboard.render.com/new/database",
+        ADMIN_SESSION_SECRET="secret",
+    )
+
+    events = list_events(settings, limit=10)
+    summary = event_summary(settings, hours=24)
+
+    assert events[0]["kind"] == "event_storage_error"
+    assert events[0]["payload"]["storage"]["ok"] is False
+    assert summary["storage"]["ok"] is False
+    assert summary["errors"] == 1

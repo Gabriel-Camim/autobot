@@ -26,6 +26,14 @@ def _uses_postgres(settings: Settings) -> bool:
     return bool(settings.database_url.strip())
 
 
+def _storage_backend(settings: Settings) -> str:
+    return "postgres" if _uses_postgres(settings) else "sqlite"
+
+
+def _storage_error(settings: Settings, exc: Exception) -> Dict[str, Any]:
+    return {"backend": _storage_backend(settings), "ok": False, "error": str(exc)[:240]}
+
+
 def _sqlite_connect(settings: Settings) -> sqlite3.Connection:
     db_path = settings.resolved_events_db_path
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -63,13 +71,19 @@ def _sqlite_ensure_column(conn: sqlite3.Connection, column: str) -> None:
 
 
 def _postgres_connect(settings: Settings):
+    database_url = settings.database_url.strip()
+    if not database_url.startswith(("postgres://", "postgresql://")):
+        raise RuntimeError(
+            "DATABASE_URL deve ser a Internal Database URL do Postgres no Render, começando com postgresql:// ou postgres://."
+        )
+
     try:
         import psycopg
         from psycopg.rows import dict_row
     except ImportError as exc:
         raise RuntimeError("psycopg is required when DATABASE_URL is configured") from exc
 
-    conn = psycopg.connect(settings.database_url, row_factory=dict_row, autocommit=True)
+    conn = psycopg.connect(database_url, row_factory=dict_row, autocommit=True)
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS events (
@@ -128,13 +142,12 @@ def init_events_db(settings: Settings) -> None:
 
 
 def event_storage_status(settings: Settings) -> Dict[str, Any]:
-    backend = "postgres" if _uses_postgres(settings) else "sqlite"
     try:
         init_events_db(settings)
-        return {"backend": backend, "ok": True, "error": None}
+        return {"backend": _storage_backend(settings), "ok": True, "error": None}
     except Exception as exc:
         logger.exception("event_storage_unavailable")
-        return {"backend": backend, "ok": False, "error": str(exc)[:240]}
+        return _storage_error(settings, exc)
 
 
 def log_event(
@@ -213,9 +226,29 @@ def list_events(
     query += f" ORDER BY created_at DESC LIMIT {placeholder}"
     params.append(limit)
 
-    with _lock:
-        with _connect(settings) as conn:
-            rows = conn.execute(query, params).fetchall()
+    try:
+        with _lock:
+            with _connect(settings) as conn:
+                rows = conn.execute(query, params).fetchall()
+    except Exception as exc:
+        logger.exception("event_list_failed")
+        return [
+            {
+                "id": "event-storage-error",
+                "created_at": _now(),
+                "kind": "event_storage_error",
+                "visitor_id": None,
+                "session_id": None,
+                "actor_type": "system",
+                "path": None,
+                "ip_hash": None,
+                "user_agent": None,
+                "payload": {
+                    "error": "Não consegui ler o banco de eventos. Verifique DATABASE_URL no Render.",
+                    "storage": _storage_error(settings, exc),
+                },
+            }
+        ]
 
     events: List[Dict[str, Any]] = []
     for row in rows:
@@ -247,32 +280,48 @@ def event_summary(settings: Settings, *, hours: int = 168) -> Dict[str, Any]:
     since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     placeholder = "%s" if _uses_postgres(settings) else "?"
 
-    with _lock:
-        with _connect(settings) as conn:
-            rows = conn.execute(
-                f"SELECT kind, COUNT(*) AS total FROM events WHERE created_at >= {placeholder} GROUP BY kind",
-                (since,),
-            ).fetchall()
-            visitor_rows = conn.execute(
-                f"""
-                SELECT DISTINCT COALESCE(visitor_id, ip_hash) AS visitor_key
-                FROM events
-                WHERE created_at >= {placeholder}
-                  AND kind = 'site_visit'
-                  AND COALESCE(visitor_id, ip_hash) IS NOT NULL
-                """,
-                (since,),
-            ).fetchall()
-            identified_rows = conn.execute(
-                f"""
-                SELECT DISTINCT visitor_id
-                FROM events
-                WHERE created_at >= {placeholder}
-                  AND visitor_id IS NOT NULL
-                  AND payload_json LIKE '%"identity"%'
-                """,
-                (since,),
-            ).fetchall()
+    try:
+        with _lock:
+            with _connect(settings) as conn:
+                rows = conn.execute(
+                    f"SELECT kind, COUNT(*) AS total FROM events WHERE created_at >= {placeholder} GROUP BY kind",
+                    (since,),
+                ).fetchall()
+                visitor_rows = conn.execute(
+                    f"""
+                    SELECT DISTINCT COALESCE(visitor_id, ip_hash) AS visitor_key
+                    FROM events
+                    WHERE created_at >= {placeholder}
+                      AND kind = 'site_visit'
+                      AND COALESCE(visitor_id, ip_hash) IS NOT NULL
+                    """,
+                    (since,),
+                ).fetchall()
+                identified_rows = conn.execute(
+                    f"""
+                    SELECT DISTINCT visitor_id
+                    FROM events
+                    WHERE created_at >= {placeholder}
+                      AND visitor_id IS NOT NULL
+                      AND payload_json LIKE '%"identity"%'
+                    """,
+                    (since,),
+                ).fetchall()
+    except Exception as exc:
+        logger.exception("event_summary_failed")
+        return {
+            "hours": hours,
+            "storage": _storage_error(settings, exc),
+            "total_events": 0,
+            "by_kind": {},
+            "visits": 0,
+            "unique_visitors": 0,
+            "identified_visitors": 0,
+            "chat_exchanges": 0,
+            "downloads": 0,
+            "admin_actions": 0,
+            "errors": 1,
+        }
 
     normalized_rows = [row if isinstance(row, dict) else dict(row) for row in rows]
     by_kind = {row["kind"]: int(row["total"]) for row in normalized_rows}

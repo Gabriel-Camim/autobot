@@ -62,7 +62,7 @@ class ConversationStore:
 _stores: Dict[int, ConversationStore] = {}
 _embeddings_cache: Dict[Tuple[str, str], OpenAIEmbeddings] = {}
 _vectorstore_cache: Dict[Tuple[str, str, str, str], Chroma] = {}
-_llm_cache: Dict[Tuple[str, str, float, str, str], ChatOpenAI] = {}
+_llm_cache: Dict[Tuple[str, str, float, str, str, bool], ChatOpenAI] = {}
 _public_docs_cache: Dict[Tuple[str, int], List[Document]] = {}
 
 
@@ -152,18 +152,22 @@ def _build_llm(settings: Settings) -> ChatOpenAI:
         settings.openai_temperature,
         settings.openai_reasoning_effort,
         settings.openai_text_verbosity,
+        settings.openai_use_responses_api,
     )
     if key not in _llm_cache:
-        model_kwargs = {}
-        if settings.openai_reasoning_effort:
-            model_kwargs["reasoning"] = {"effort": settings.openai_reasoning_effort}
-        if settings.openai_text_verbosity:
-            model_kwargs["text"] = {"verbosity": settings.openai_text_verbosity}
+        model_name = settings.openai_chat_model.lower()
+        supports_reasoning_effort = model_name.startswith("gpt-5") or model_name.startswith(("o1", "o3", "o4"))
+        supports_verbosity = model_name.startswith("gpt-5")
+        reasoning_effort = settings.openai_reasoning_effort if supports_reasoning_effort else None
+        verbosity = settings.openai_text_verbosity if supports_verbosity else None
+        use_responses_api = bool(settings.openai_use_responses_api and (supports_reasoning_effort or supports_verbosity))
         _llm_cache[key] = ChatOpenAI(
             model=settings.openai_chat_model,
             temperature=settings.openai_temperature,
             api_key=settings.openai_api_key,
-            model_kwargs=model_kwargs,
+            reasoning_effort=reasoning_effort,
+            verbosity=verbosity,
+            use_responses_api=use_responses_api,
         )
     return _llm_cache[key]
 
