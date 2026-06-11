@@ -18,7 +18,7 @@ summary: Competências técnicas consolidadas a partir do currículo.
 
 ## IA generativa e LLMs
 
-OpenAI, Claude, LangChain, engenharia de prompts, agentes, structured outputs, tool calling, RAG, guardrails, avaliação de respostas, memória, orquestração de modelos e desenvolvimento assistido por IA com Codex e Abacus AI.
+OpenAI, Claude, LangChain, engenharia de prompts, agentes, structured outputs, tool calling, RAG, guardrails, avaliação de respostas, memória, orquestração de modelos e desenvolvimento assistido por IA com Codex e Claude.
 
 ## Dados e analytics
 
@@ -30,7 +30,7 @@ n8n, APIs REST, webhooks, JSON, OpenAI API, Gamma API, parsing de respostas, tra
 
 ## Desenvolvimento e arquitetura
 
-JavaScript, Python, HTML/CSS, GitHub, Visual Studio Code, Vercel, Docker, backend, APIs internas, arquitetura modular, autenticação, permissões, CI/CD e banco multitenant.
+JavaScript, Python, HTML/CSS, React/Vite, GitHub, Visual Studio Code, Vercel, Render, Docker, backend, APIs internas, arquitetura modular, autenticação, permissões, CI/CD e banco multitenant.
 
 ## Marketing digital e RevOps
 
