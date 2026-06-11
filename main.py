@@ -5,6 +5,7 @@ import logging
 import time
 import zipfile
 from io import BytesIO
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -112,6 +113,17 @@ PUBLIC_EVENT_KINDS = {
 }
 
 
+def _writable_directory_status(directory: Path) -> Dict[str, Any]:
+    try:
+        directory.mkdir(parents=True, exist_ok=True)
+        probe = directory / ".health-write-test"
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return {"ok": True, "error": None}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc)[:240]}
+
+
 def _actor_type(request: Request, visitor_identity: Optional[Dict[str, Any]] = None) -> str:
     admin = _current_admin(request, settings)
     if admin:
@@ -191,6 +203,7 @@ def health():
         "openai_configured": bool(settings.openai_api_key),
         "chroma_dir": str(chroma_dir),
         "chroma_exists": chroma_dir.exists() and any(chroma_dir.rglob("*")),
+        "chroma_writable": _writable_directory_status(chroma_dir),
         "knowledge_dir": str(settings.resolved_knowledge_dir),
         "knowledge_exists": settings.resolved_knowledge_dir.exists(),
         "materials_dir": str(materials_dir),

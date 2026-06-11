@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 import argparse
+import gc
+import os
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
@@ -12,7 +15,7 @@ from langchain_core.documents import Document
 from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from agent import AppError
+from agent import AppError, clear_rag_caches
 from config import Settings, get_settings
 
 
@@ -85,6 +88,8 @@ def _reset_chroma_dir(settings: Settings) -> None:
     project_root = settings.project_root.resolve()
     temp_root = Path(tempfile.gettempdir()).resolve()
     allowed_roots = [project_root, temp_root]
+    clear_rag_caches()
+    gc.collect()
     if target.exists():
         if not any(root in target.parents for root in allowed_roots):
             raise AppError(
@@ -98,8 +103,27 @@ def _reset_chroma_dir(settings: Settings) -> None:
                 message=f"Recusando apagar diretório raiz permitido: {target}",
                 status_code=400,
             )
-        shutil.rmtree(target)
+        shutil.rmtree(target, onerror=_make_writable_then_retry)
     target.mkdir(parents=True, exist_ok=True)
+    _verify_writable_directory(target)
+
+
+def _make_writable_then_retry(func, path: str, _exc_info) -> None:
+    os.chmod(path, stat.S_IREAD | stat.S_IWRITE | stat.S_IEXEC)
+    func(path)
+
+
+def _verify_writable_directory(directory: Path) -> None:
+    probe = directory / ".write-test"
+    try:
+        probe.write_text("ok", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+    except OSError as exc:
+        raise AppError(
+            code="chroma_not_writable",
+            message=f"Diretório Chroma sem permissão de escrita: {directory}",
+            status_code=503,
+        ) from exc
 
 
 def ingest(settings: Settings) -> int:
@@ -123,6 +147,7 @@ def ingest(settings: Settings) -> int:
         collection_name=settings.chroma_collection,
         persist_directory=str(settings.resolved_chroma_dir),
     )
+    clear_rag_caches()
     return len(chunks)
 
 

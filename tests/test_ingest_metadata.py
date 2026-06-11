@@ -55,3 +55,5 @@ def test_reset_chroma_allows_temp_directory(tmp_path: Path):
 
     assert chroma_dir.exists()
     assert not (chroma_dir / "old.sqlite3").exists()
+    (chroma_dir / "new.sqlite3").write_text("new", encoding="utf-8")
+    assert (chroma_dir / "new.sqlite3").exists()

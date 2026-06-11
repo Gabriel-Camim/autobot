@@ -93,6 +93,11 @@ def load_system_prompt(settings: Settings) -> str:
     return prompt or FALLBACK_SYSTEM_PROMPT
 
 
+def clear_rag_caches() -> None:
+    _vectorstore_cache.clear()
+    _public_docs_cache.clear()
+
+
 def _require_openai_key(settings: Settings) -> None:
     if not settings.openai_api_key:
         raise AppError(

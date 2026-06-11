@@ -279,6 +279,7 @@ def event_summary(settings: Settings, *, hours: int = 168) -> Dict[str, Any]:
     hours = max(1, min(hours, 24 * 90))
     since = (datetime.now(timezone.utc) - timedelta(hours=hours)).isoformat()
     placeholder = "%s" if _uses_postgres(settings) else "?"
+    identity_pattern = '%"identity"%'
 
     try:
         with _lock:
@@ -299,13 +300,13 @@ def event_summary(settings: Settings, *, hours: int = 168) -> Dict[str, Any]:
                 ).fetchall()
                 identified_rows = conn.execute(
                     f"""
-                    SELECT DISTINCT visitor_id
-                    FROM events
-                    WHERE created_at >= {placeholder}
-                      AND visitor_id IS NOT NULL
-                      AND payload_json LIKE '%"identity"%'
-                    """,
-                    (since,),
+                SELECT DISTINCT visitor_id
+                FROM events
+                WHERE created_at >= {placeholder}
+                  AND visitor_id IS NOT NULL
+                  AND payload_json LIKE {placeholder}
+                """,
+                    (since, identity_pattern),
                 ).fetchall()
     except Exception as exc:
         logger.exception("event_summary_failed")
