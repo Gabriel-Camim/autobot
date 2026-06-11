@@ -12,7 +12,7 @@ summary: Relatório estático do nó gabriel.
 
 # Gabriel Camim Santos
 
-Sou Gabriel Camim Santos, profissional de tecnologia focado em IA generativa, dados, automação, RevOps e arquitetura de sistemas. Minha base vem do técnico em Informática, da experiência com sistemas críticos e de projetos autorais em DGE, Ebook Generator, Autobot e IA aplicada à Medicina Veterinária.
+Sou Gabriel Camim Santos, tenho 23 anos, profissional de tecnologia focado em IA generativa, dados, automação, RevOps e arquitetura de sistemas. Minha base vem do técnico em Informática, da experiência com sistemas críticos e de projetos autorais em DGE, Ebook Generator, Autobot e IA aplicada à Medicina Veterinária.
 
 O que eu levo para uma vaga é a combinação entre operação real e construção. Já atuei em suporte a ERP, PDV, infraestrutura hospitalar e ambientes de produção; ao mesmo tempo, crio projetos com LLMs, n8n, APIs, SQL, PostgreSQL, React, FastAPI, LangChain, Chroma, OpenAI, Vercel e GitHub.
 
