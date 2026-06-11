@@ -293,8 +293,62 @@ def _tokens(text: str) -> set[str]:
 
 def _is_skill_question(text: str, active_node: Optional[str]) -> bool:
     normalized = text.lower()
-    markers = ("skill", "stack", "competência", "competencias", "habilidade", "hard skill", "soft skill", "tecnologia")
+    markers = ("skill", "stack", "stak", "competência", "competencias", "habilidade", "hard skill", "soft skill", "tecnologia")
     return active_node == "stack" or any(marker in normalized for marker in markers)
+
+
+SKILL_FOCUS_TERMS = {"skill", "skills", "stack", "stak", "hard", "soft", "competenc", "tecnico", "técnico"}
+
+
+def _mentioned_project_terms(text: str) -> set[str]:
+    normalized = text.lower()
+    terms: set[str] = set()
+    specific_project = False
+    if any(marker in normalized for marker in ("dge", "data growth", "galpao", "galpão")):
+        terms.update({"projetos/dge", "dge", "data-growth", "galpao", "galpão"})
+        specific_project = True
+    if any(marker in normalized for marker in ("ebook", "e-book", "generator", "gerador")):
+        terms.update({"projetos/ebookgenerator", "ebook", "ebook-generator", "ebookgenerator", "generator"})
+        specific_project = True
+    if "autobot" in normalized:
+        terms.update({"projetos/autobot", "autobot"})
+        specific_project = True
+    if any(marker in normalized for marker in ("vetdex", "vdc", "diagnosia", "diagnósia", "veterin")):
+        terms.update({"projetos/veterinaria", "veterinaria", "veterinária", "vetdex", "vdc", "diagnosia", "diagnósia"})
+        specific_project = True
+    if not specific_project and any(marker in normalized for marker in ("projeto", "projetos", "outros projetos")):
+        terms.update({"projetos", "autobot", "dge", "ebook", "veterinaria", "veterinária"})
+    return terms
+
+
+def _explicit_focus_terms(text: str) -> set[str]:
+    normalized = text.lower()
+    terms = set()
+    terms.update(_mentioned_project_terms(text))
+    if any(marker in normalized for marker in ("trajet", "formação", "formacao", "idioma", "língua", "lingua")):
+        terms.update(_node_terms("trajetoria"))
+    if any(marker in normalized for marker in ("experiência", "experiencia", "trabalho", "profissional", "desafio")):
+        terms.update(_node_terms("experiencia"))
+    if any(marker in normalized for marker in ("mercado", "dados", "automação", "automacao", "ia", "sistema")):
+        terms.update(_node_terms("mercado"))
+    if any(marker in normalized for marker in ("entrevista", "faq", "pergunta técnica", "pergunta tecnica")):
+        terms.update(_node_terms("entrevista"))
+    if any(marker in normalized for marker in ("currículo", "curriculo", "material", "recrutador")):
+        terms.update(_node_terms("materiais"))
+    if any(marker in normalized for marker in ("stack", "stak", "skill", "competência", "competencia", "habilidade", "tecnologia")):
+        terms.update(SKILL_FOCUS_TERMS)
+    return terms
+
+
+def _expand_retrieval_query(text: str, active_node: Optional[str]) -> str:
+    additions = set()
+    if _is_skill_question(text, active_node):
+        additions.update({"stack", "skills", "tecnologias", "ferramentas", "competências técnicas"})
+    additions.update(_mentioned_project_terms(text))
+    additions.update(_explicit_focus_terms(text))
+    if not additions:
+        return text
+    return f"{text}\nTermos de busca derivados: {', '.join(sorted(additions))}"
 
 
 def _node_terms(active_node: Optional[str]) -> set[str]:
@@ -311,15 +365,19 @@ def _node_terms(active_node: Optional[str]) -> set[str]:
     return mapping.get(active_node or "", set())
 
 
-def _doc_matches_focus(doc: Document, active_node: Optional[str], skill_question: bool) -> bool:
+def _doc_matches_focus(doc: Document, active_node: Optional[str], skill_question: bool, query: str = "") -> bool:
     metadata = doc.metadata or {}
     source = str(metadata.get("source", "")).lower()
     category = str(metadata.get("category", "")).lower()
     tags = str(metadata.get("tags", "")).lower()
     haystack = f"{source} {category} {tags}"
+    project_terms = _mentioned_project_terms(query)
     if skill_question:
-        return any(term in haystack for term in ("skill", "stack", "hard", "soft", "competenc", "tecnico", "técnico"))
-    terms = _node_terms(active_node)
+        if project_terms:
+            return any(term in haystack for term in SKILL_FOCUS_TERMS | project_terms)
+        return any(term in haystack for term in SKILL_FOCUS_TERMS)
+    explicit_terms = _explicit_focus_terms(query)
+    terms = explicit_terms or _node_terms(active_node)
     if not terms:
         return True
     return any(term in haystack for term in terms)
@@ -327,7 +385,55 @@ def _doc_matches_focus(doc: Document, active_node: Optional[str], skill_question
 
 def _metadata_key(doc: Document) -> str:
     metadata = doc.metadata or {}
-    return str(metadata.get("source") or metadata.get("title") or id(doc))
+    source = str(metadata.get("source") or metadata.get("title") or "document")
+    return f"{source}:{hash(doc.page_content[:500])}"
+
+
+def _metadata_text(doc: Document) -> str:
+    metadata = doc.metadata or {}
+    return " ".join(str(value) for value in metadata.values())
+
+
+def _document_relevance(
+    doc: Document,
+    query: str,
+    active_node: Optional[str],
+    *,
+    vector_score: Optional[float] = None,
+    channel: str = "lexical",
+) -> float:
+    query_terms = _tokens(query) | _explicit_focus_terms(query)
+    metadata_terms = _tokens(_metadata_text(doc))
+    content_terms = _tokens(doc.page_content)
+    source = str((doc.metadata or {}).get("source", "")).lower()
+    category = str((doc.metadata or {}).get("category", "")).lower()
+    tags = str((doc.metadata or {}).get("tags", "")).lower()
+    haystack = f"{source} {category} {tags}"
+
+    explicit_terms = _explicit_focus_terms(query)
+    haystack_terms = _tokens(haystack)
+    metadata_overlap = len(query_terms & metadata_terms)
+    content_overlap = len(query_terms & content_terms)
+    explicit_metadata_overlap = len(explicit_terms & haystack_terms)
+    explicit_content_overlap = len(explicit_terms & content_terms)
+    active_overlap = len(_node_terms(active_node) & metadata_terms)
+    priority = int((doc.metadata or {}).get("priority", 3) or 3)
+
+    score = metadata_overlap * 3.0 + content_overlap * 0.45
+    score += explicit_metadata_overlap * 8.0 + explicit_content_overlap * 1.5
+    score += max(0, 4 - priority) * 0.4
+    score += min(active_overlap, 3) * 0.4
+    if _mentioned_project_terms(query) and source.startswith("projetos/"):
+        score += 4.0
+    if channel == "vector" and vector_score is not None:
+        score += max(0.0, settings_like_vector_ceiling(vector_score)) * 1.5
+    if source.startswith("reports/"):
+        score -= 100
+    return score
+
+
+def settings_like_vector_ceiling(vector_score: float) -> float:
+    return 1.8 - min(vector_score, 1.8)
 
 
 def _cached_public_documents(settings: Settings) -> List[Document]:
@@ -345,43 +451,55 @@ def _cached_public_documents(settings: Settings) -> List[Document]:
 
 
 def _lexical_matches(settings: Settings, query: str, active_node: Optional[str], limit: int) -> List[Tuple[Document, float]]:
-    query_terms = _tokens(query) | _node_terms(active_node)
+    query_terms = _tokens(query) | _explicit_focus_terms(query)
     if not query_terms or limit <= 0:
         return []
-    skill_question = _is_skill_question(query, active_node)
     scored: List[Tuple[Document, float]] = []
     for doc in _cached_public_documents(settings):
-        if not _doc_matches_focus(doc, active_node, skill_question):
+        doc_terms = _tokens(f"{_metadata_text(doc)}\n{doc.page_content}")
+        if not query_terms & doc_terms:
             continue
-        metadata_text = " ".join(str(value) for value in (doc.metadata or {}).values())
-        doc_terms = _tokens(f"{metadata_text}\n{doc.page_content}")
-        overlap = len(query_terms & doc_terms)
-        if overlap:
-            priority = int((doc.metadata or {}).get("priority", 3) or 3)
-            scored.append((doc, max(0.01, 2.0 - overlap - (4 - priority) * 0.15)))
+        relevance = _document_relevance(doc, query, active_node, channel="lexical")
+        if relevance > 0:
+            scored.append((doc, -relevance))
     scored.sort(key=lambda item: item[1])
     return scored[:limit]
 
 
 def _retrieve_documents(settings: Settings, retrieval_query: str, active_node: Optional[str]) -> List[Tuple[Document, float]]:
     vectorstore = _build_vectorstore(settings)
-    docs_with_scores = vectorstore.similarity_search_with_score(retrieval_query, k=max(settings.rag_k, 1))
-    skill_question = _is_skill_question(retrieval_query, active_node)
-    focused = [
-        (doc, score)
-        for doc, score in docs_with_scores
-        if score <= settings.rag_max_distance and _doc_matches_focus(doc, active_node, skill_question)
-    ]
-    lexical = _lexical_matches(settings, retrieval_query, active_node, settings.rag_lexical_k)
-    combined: List[Tuple[Document, float]] = []
+    vector_limit = max(settings.rag_k * 4, 24)
+    lexical_limit = max(settings.rag_lexical_k, settings.rag_k * 3, 12)
+    docs_with_scores = vectorstore.similarity_search_with_score(retrieval_query, k=vector_limit)
+    candidates: List[Tuple[Document, float, str, float]] = []
+
+    for doc, score in docs_with_scores:
+        relevance = _document_relevance(doc, retrieval_query, active_node, vector_score=score, channel="vector")
+        if score <= settings.rag_max_distance or relevance > 0:
+            candidates.append((doc, score, "vector", relevance))
+
+    for doc, score in _lexical_matches(settings, retrieval_query, active_node, lexical_limit):
+        candidates.append((doc, score, "lexical", -score))
+
+    candidates.sort(key=lambda item: (-item[3], item[1]))
+    selected: List[Tuple[Document, float]] = []
     seen: set[str] = set()
-    for doc, score in [*focused, *lexical]:
+    source_counts: Dict[str, int] = {}
+    for doc, score, _channel, relevance in candidates:
+        if relevance <= 0:
+            continue
         key = _metadata_key(doc)
         if key in seen:
             continue
+        source = str((doc.metadata or {}).get("source", key))
+        if source_counts.get(source, 0) >= 2:
+            continue
         seen.add(key)
-        combined.append((doc, score))
-    return combined[: max(settings.rag_k, 1)]
+        source_counts[source] = source_counts.get(source, 0) + 1
+        selected.append((doc, score))
+        if len(selected) >= max(settings.rag_k, 1):
+            break
+    return selected
 
 
 def _format_context(docs_with_scores, max_chars: int) -> str:
@@ -456,9 +574,7 @@ def answer_question(
     if not clean_message:
         raise AppError(code="empty_message", message="Envie uma pergunta ou mensagem para conversar.", status_code=400)
 
-    retrieval_query = clean_message
-    if active_node:
-        retrieval_query = f"{clean_message}\nTema ativo no mapa mental: {active_node}"
+    retrieval_query = _expand_retrieval_query(clean_message, active_node)
 
     retrieval_start = time.perf_counter()
     try:
@@ -532,6 +648,11 @@ User question:
             "llm_ms": llm_ms,
             "total_ms": round((time.perf_counter() - total_start) * 1000, 2),
             "retrieved_docs": len(docs_with_scores),
+            "retrieved_sources": [
+                str((doc.metadata or {}).get("source", ""))
+                for doc, _score in docs_with_scores
+                if (doc.metadata or {}).get("source")
+            ],
         }
     )
 
