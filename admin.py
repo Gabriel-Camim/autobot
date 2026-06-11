@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 
 from agent import AppError
 from config import Settings, get_settings
+from events import event_summary, list_events, log_event
 from ingest import ingest, load_public_documents
 
 
@@ -457,43 +458,46 @@ def read_knowledge_file(path: str, request: Request):
 @router.put("/knowledge/file", response_model=CommitResponse)
 def write_knowledge_file(payload: FileWriteRequest, request: Request):
     settings = _settings()
-    _require_admin(request, settings)
+    user = _require_admin(request, settings)
     normalized, target = _resolve_content_path(payload.path, settings)
     message = payload.message or f"admin: update {normalized}"
     commit = _github_put(settings, normalized, payload.content, message)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(payload.content, encoding="utf-8", newline="\n")
+    log_event(settings, "admin_file_write", request=request, session_id=user.login, payload=commit.model_dump())
     return commit
 
 
 @router.delete("/knowledge/file", response_model=CommitResponse)
 def delete_knowledge_file(path: str, request: Request):
     settings = _settings()
-    _require_admin(request, settings)
+    user = _require_admin(request, settings)
     normalized, target = _resolve_content_path(path, settings)
     commit = _github_delete(settings, normalized, f"admin: delete {normalized}")
     if target.exists():
         target.unlink()
+    log_event(settings, "admin_file_delete", request=request, session_id=user.login, payload=commit.model_dump())
     return commit
 
 
 @router.post("/knowledge/folder", response_model=CommitResponse)
 def create_knowledge_folder(payload: FolderRequest, request: Request):
     settings = _settings()
-    _require_admin(request, settings)
+    user = _require_admin(request, settings)
     normalized, target = _resolve_content_path(payload.path, settings, require_markdown=False)
     repo_path = f"{normalized}/.gitkeep"
     message = payload.message or f"admin: create folder {normalized}"
     commit = _github_put(settings, repo_path, "", message)
     target.mkdir(parents=True, exist_ok=True)
     (target / ".gitkeep").write_text("", encoding="utf-8")
+    log_event(settings, "admin_folder_create", request=request, session_id=user.login, payload=commit.model_dump())
     return commit
 
 
 @router.post("/knowledge/import", response_model=ImportResponse)
 async def import_markdown(request: Request, directory: str = Form(...), files: List[UploadFile] = File(...)):
     settings = _settings()
-    _require_admin(request, settings)
+    user = _require_admin(request, settings)
     directory_path, local_directory = _resolve_content_path(directory, settings, require_markdown=False)
     local_directory.mkdir(parents=True, exist_ok=True)
     results: List[CommitResponse] = []
@@ -508,7 +512,15 @@ async def import_markdown(request: Request, directory: str = Form(...), files: L
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8", newline="\n")
         results.append(commit)
-    return ImportResponse(ok=True, files=results)
+    response = ImportResponse(ok=True, files=results)
+    log_event(
+        settings,
+        "admin_markdown_import",
+        request=request,
+        session_id=user.login,
+        payload={"directory": directory_path, "files": [result.model_dump() for result in results]},
+    )
+    return response
 
 
 @router.get("/prompt", response_model=PromptResponse)
@@ -523,12 +535,13 @@ def read_prompt(request: Request):
 @router.put("/prompt", response_model=CommitResponse)
 def write_prompt(payload: PromptWriteRequest, request: Request):
     settings = _settings()
-    _require_admin(request, settings)
+    user = _require_admin(request, settings)
     repo_path, target = _prompt_paths(settings)
     message = payload.message or "admin: update system prompt"
     commit = _github_put(settings, repo_path, payload.content, message)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(payload.content, encoding="utf-8", newline="\n")
+    log_event(settings, "admin_prompt_write", request=request, session_id=user.login, payload=commit.model_dump())
     return commit
 
 
@@ -536,7 +549,7 @@ def _set_reindex_status(**values: Any) -> None:
     _reindex_status.update(values)
 
 
-def _run_reindex(settings: Settings) -> None:
+def _run_reindex(settings: Settings, actor: Optional[str] = None) -> None:
     try:
         docs = load_public_documents(settings)
         chunks = ingest(settings)
@@ -547,8 +560,16 @@ def _run_reindex(settings: Settings) -> None:
             chunk_count=chunks,
             error=None,
         )
+        log_event(
+            settings,
+            "admin_reindex_success",
+            session_id=actor,
+            payload={"document_count": len(docs), "chunk_count": chunks},
+        )
     except Exception as exc:
-        _set_reindex_status(state="error", finished_at=time.time(), error=_sanitize_error(exc))
+        sanitized = _sanitize_error(exc)
+        _set_reindex_status(state="error", finished_at=time.time(), error=sanitized)
+        log_event(settings, "admin_reindex_error", session_id=actor, payload={"error": sanitized})
     finally:
         _reindex_lock.release()
 
@@ -556,7 +577,7 @@ def _run_reindex(settings: Settings) -> None:
 @router.post("/reindex", response_model=ReindexStatusResponse)
 def reindex_admin(request: Request):
     settings = _settings()
-    _require_admin(request, settings)
+    user = _require_admin(request, settings)
     if not _reindex_lock.acquire(blocking=False):
         raise AppError("reindex_running", "Reindexação já está em andamento.", 409)
     _set_reindex_status(
@@ -567,7 +588,8 @@ def reindex_admin(request: Request):
         chunk_count=0,
         error=None,
     )
-    thread = threading.Thread(target=_run_reindex, args=(settings,), daemon=True)
+    log_event(settings, "admin_reindex_start", request=request, session_id=user.login)
+    thread = threading.Thread(target=_run_reindex, args=(settings, user.login), daemon=True)
     thread.start()
     return ReindexStatusResponse(**_reindex_status)
 
@@ -577,3 +599,17 @@ def reindex_status(request: Request):
     settings = _settings()
     _require_admin(request, settings)
     return ReindexStatusResponse(**_reindex_status)
+
+
+@router.get("/events/summary")
+def admin_events_summary(request: Request, hours: int = Query(default=168, ge=1, le=2160)):
+    settings = _settings()
+    _require_admin(request, settings)
+    return event_summary(settings, hours=hours)
+
+
+@router.get("/events")
+def admin_events(request: Request, kind: Optional[str] = Query(default=None), limit: int = Query(default=100, ge=1, le=500)):
+    settings = _settings()
+    _require_admin(request, settings)
+    return {"events": list_events(settings, kind=kind, limit=limit)}

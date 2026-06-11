@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from ingest import _reset_chroma_dir
 from config import Settings
 from ingest import load_public_documents
 
@@ -42,3 +43,15 @@ Conteudo privado.
     assert len(docs) == 1
     assert docs[0].metadata["title"] == "Publico"
     assert docs[0].metadata["source"] == "public.md"
+
+
+def test_reset_chroma_allows_temp_directory(tmp_path: Path):
+    chroma_dir = tmp_path / "gabriel-agent" / "chroma"
+    chroma_dir.mkdir(parents=True)
+    (chroma_dir / "old.sqlite3").write_text("old", encoding="utf-8")
+    settings = Settings(_env_file=None, CHROMA_DIR=chroma_dir)
+
+    _reset_chroma_dir(settings)
+
+    assert chroma_dir.exists()
+    assert not (chroma_dir / "old.sqlite3").exists()

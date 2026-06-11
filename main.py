@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 from admin import router as admin_router
 from agent import AppError, answer_question
 from config import get_settings
+from events import log_event
 from voice import synthesize_speech_base64, transcribe_upload
 
 
@@ -80,6 +81,16 @@ class VoiceChatResponse(ChatResponse):
     tts_error: Optional[str] = None
 
 
+class VisitRequest(BaseModel):
+    path: str = "/"
+    referrer: Optional[str] = None
+    title: Optional[str] = None
+    visitor_id: Optional[str] = None
+    language: Optional[str] = None
+    timezone: Optional[str] = None
+    viewport: Optional[dict] = None
+
+
 @app.middleware("http")
 async def request_logging(request: Request, call_next):
     request_id = request.headers.get("x-request-id", str(uuid4()))
@@ -88,8 +99,14 @@ async def request_logging(request: Request, call_next):
         response = await call_next(request)
         status_code = response.status_code
         return response
-    except Exception:
+    except Exception as exc:
         status_code = 500
+        log_event(
+            settings,
+            "backend_error",
+            request=request,
+            payload={"error": str(exc)[:500], "request_id": request_id},
+        )
         raise
     finally:
         elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
@@ -108,7 +125,13 @@ async def request_logging(request: Request, call_next):
 
 
 @app.exception_handler(AppError)
-async def app_error_handler(_request: Request, exc: AppError):
+async def app_error_handler(request: Request, exc: AppError):
+    log_event(
+        settings,
+        "app_error",
+        request=request,
+        payload={"code": exc.code, "message": exc.message, "status_code": exc.status_code},
+    )
     return JSONResponse(
         status_code=exc.status_code,
         content={"code": exc.code, "message": exc.message},
@@ -125,6 +148,18 @@ def health():
         "knowledge_dir": str(settings.resolved_knowledge_dir),
         "knowledge_exists": settings.resolved_knowledge_dir.exists(),
     }
+
+
+@app.post("/events/visit")
+def track_visit(payload: VisitRequest, request: Request):
+    log_event(
+        settings,
+        "site_visit",
+        request=request,
+        session_id=payload.visitor_id,
+        payload=payload.model_dump(),
+    )
+    return {"ok": True}
 
 
 def _parse_report(raw: str) -> tuple[str, str]:
@@ -156,18 +191,33 @@ def node_report(node_id: str):
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(payload: ChatRequest):
+def chat(payload: ChatRequest, request: Request):
     result = answer_question(
         message=payload.message,
         session_id=payload.session_id,
         active_node=payload.active_node,
         settings=settings,
     )
+    sources = [SourceSummaryResponse(**source.__dict__) for source in result.sources]
+    log_event(
+        settings,
+        "chat_exchange",
+        request=request,
+        session_id=result.session_id,
+        payload={
+            "question": payload.message,
+            "answer": result.answer,
+            "active_node": payload.active_node,
+            "detected_language": result.detected_language,
+            "usage": result.usage,
+            "sources": [source.model_dump() for source in sources],
+        },
+    )
     return ChatResponse(
         session_id=result.session_id,
         answer=result.answer,
         detected_language=result.detected_language,
-        sources_summary=[SourceSummaryResponse(**source.__dict__) for source in result.sources],
+        sources_summary=sources,
         usage=result.usage,
     )
 
@@ -186,6 +236,7 @@ async def voice_transcribe(file: UploadFile = File(...)):
 
 @app.post("/voice/chat", response_model=VoiceChatResponse)
 async def voice_chat(
+    request: Request,
     file: UploadFile = File(...),
     session_id: Optional[str] = Form(default=None),
     active_node: Optional[str] = Form(default=None),
@@ -212,12 +263,29 @@ async def voice_chat(
     except AppError as exc:
         tts_error = exc.message
 
+    sources = [SourceSummaryResponse(**source.__dict__) for source in result.sources]
+    log_event(
+        settings,
+        "voice_chat_exchange",
+        request=request,
+        session_id=result.session_id,
+        payload={
+            "transcript": transcript,
+            "answer": result.answer,
+            "active_node": active_node,
+            "detected_language": result.detected_language,
+            "usage": result.usage,
+            "tts_error": tts_error,
+            "sources": [source.model_dump() for source in sources],
+        },
+    )
+
     return VoiceChatResponse(
         session_id=result.session_id,
         transcript=transcript,
         answer=result.answer,
         detected_language=result.detected_language,
-        sources_summary=[SourceSummaryResponse(**source.__dict__) for source in result.sources],
+        sources_summary=sources,
         usage=result.usage,
         audio_base64=audio_base64,
         tts_error=tts_error,

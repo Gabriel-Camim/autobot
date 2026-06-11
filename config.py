@@ -18,6 +18,8 @@ class Settings(BaseSettings):
 
     chroma_dir: Path = Field(default=Path("./chroma"), alias="CHROMA_DIR")
     chroma_collection: str = Field(default="gabriel_portfolio", alias="CHROMA_COLLECTION")
+    data_dir: Path = Field(default=Path("./tmp"), alias="DATA_DIR")
+    events_db_path: Path = Field(default=Path("./tmp/events.sqlite3"), alias="EVENTS_DB_PATH")
     knowledge_dir: Path = Field(default=Path("./knowledge"), alias="KNOWLEDGE_DIR")
     materials_dir: Path = Field(default=Path("./materials/recruiter-pack"), alias="MATERIALS_DIR")
     system_prompt_path: Path = Field(default=Path("./prompts/system.md"), alias="SYSTEM_PROMPT_PATH")
@@ -79,6 +81,14 @@ class Settings(BaseSettings):
     @property
     def resolved_chroma_dir(self) -> Path:
         return self.resolve_path(self.chroma_dir)
+
+    @property
+    def resolved_data_dir(self) -> Path:
+        return self.resolve_path(self.data_dir)
+
+    @property
+    def resolved_events_db_path(self) -> Path:
+        return self.resolve_path(self.events_db_path)
 
     @property
     def resolved_knowledge_dir(self) -> Path:

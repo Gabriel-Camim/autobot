@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import shutil
+import tempfile
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
 
@@ -82,11 +83,19 @@ def load_public_documents(settings: Settings) -> List[Document]:
 def _reset_chroma_dir(settings: Settings) -> None:
     target = settings.resolved_chroma_dir
     project_root = settings.project_root.resolve()
+    temp_root = Path(tempfile.gettempdir()).resolve()
+    allowed_roots = [project_root, temp_root]
     if target.exists():
-        if project_root not in target.parents or target == project_root:
+        if not any(root in target.parents for root in allowed_roots):
             raise AppError(
                 code="unsafe_chroma_dir",
-                message=f"Recusando apagar diretório fora do projeto: {target}",
+                message=f"Recusando apagar diretório fora das áreas permitidas: {target}",
+                status_code=400,
+            )
+        if target in allowed_roots:
+            raise AppError(
+                code="unsafe_chroma_dir",
+                message=f"Recusando apagar diretório raiz permitido: {target}",
                 status_code=400,
             )
         shutil.rmtree(target)
