@@ -204,6 +204,7 @@ def health():
         "chroma_dir": str(chroma_dir),
         "chroma_exists": chroma_dir.exists() and any(chroma_dir.rglob("*")),
         "chroma_writable": _writable_directory_status(chroma_dir),
+        "rag_auto_reindex_on_missing": settings.rag_auto_reindex_on_missing,
         "knowledge_dir": str(settings.resolved_knowledge_dir),
         "knowledge_exists": settings.resolved_knowledge_dir.exists(),
         "materials_dir": str(materials_dir),

@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     rag_max_distance: float = Field(default=1.55, alias="RAG_MAX_DISTANCE")
     rag_min_docs: int = Field(default=1, alias="RAG_MIN_DOCS")
     rag_max_context_chars: int = Field(default=14000, alias="RAG_MAX_CONTEXT_CHARS")
+    rag_auto_reindex_on_missing: bool = Field(default=True, alias="RAG_AUTO_REINDEX_ON_MISSING")
+    rag_auto_reindex_wait_seconds: int = Field(default=90, alias="RAG_AUTO_REINDEX_WAIT_SECONDS")
+    rag_excluded_source_prefixes: str = Field(default="reports/", alias="RAG_EXCLUDED_SOURCE_PREFIXES")
 
     frontend_origins: str = Field(
         default="https://frontend-nbecvxa81-camim2003-1759s-projects.vercel.app",
@@ -66,6 +69,10 @@ class Settings(BaseSettings):
     @property
     def admin_github_user_list(self) -> List[str]:
         return [user.strip().lower() for user in self.admin_github_users.split(",") if user.strip()]
+
+    @property
+    def rag_excluded_source_prefix_list(self) -> List[str]:
+        return [prefix.strip().strip("/") + "/" for prefix in self.rag_excluded_source_prefixes.split(",") if prefix.strip()]
 
     @property
     def admin_redirect_url(self) -> str:

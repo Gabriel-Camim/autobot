@@ -31,6 +31,18 @@ Conteudo privado.
 """,
         encoding="utf-8",
     )
+    reports = knowledge / "reports"
+    reports.mkdir()
+    (reports / "stack.md").write_text(
+        """---
+title: Relatorio Stack
+category: reports
+visibility: public
+---
+Conteudo estatico para o botao play, fora do RAG.
+""",
+        encoding="utf-8",
+    )
 
     settings = Settings(
         _env_file=None,

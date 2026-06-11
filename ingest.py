@@ -63,6 +63,8 @@ def load_public_documents(settings: Settings) -> List[Document]:
             continue
 
         relative_source = path.relative_to(knowledge_dir).as_posix()
+        if any(relative_source.startswith(prefix) for prefix in settings.rag_excluded_source_prefix_list):
+            continue
         tags = metadata.get("tags", [])
         if isinstance(tags, list):
             tags_value = ", ".join(str(tag) for tag in tags)

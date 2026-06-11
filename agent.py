@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
@@ -64,6 +65,7 @@ _embeddings_cache: Dict[Tuple[str, str], OpenAIEmbeddings] = {}
 _vectorstore_cache: Dict[Tuple[str, str, str, str], Chroma] = {}
 _llm_cache: Dict[Tuple[str, str, float, str, str, bool], ChatOpenAI] = {}
 _public_docs_cache: Dict[Tuple[str, int], List[Document]] = {}
+_auto_reindex_lock = threading.Lock()
 
 
 FALLBACK_SYSTEM_PROMPT = """
@@ -96,6 +98,32 @@ def load_system_prompt(settings: Settings) -> str:
 def clear_rag_caches() -> None:
     _vectorstore_cache.clear()
     _public_docs_cache.clear()
+
+
+def _response_content_to_text(content: Any) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "")
+            if item_type == "reasoning":
+                continue
+            if isinstance(item.get("text"), str):
+                parts.append(item["text"])
+                continue
+            nested = item.get("content")
+            if isinstance(nested, (list, str)):
+                nested_text = _response_content_to_text(nested)
+                if nested_text:
+                    parts.append(nested_text)
+        return "\n".join(part.strip() for part in parts if part and part.strip()).strip()
+    return str(content).strip()
 
 
 def _require_openai_key(settings: Settings) -> None:
@@ -132,8 +160,53 @@ def _ensure_vector_index(settings: Settings) -> None:
         )
 
 
+def _vector_index_exists(settings: Settings) -> bool:
+    chroma_dir = settings.resolved_chroma_dir
+    return chroma_dir.exists() and any(chroma_dir.rglob("*"))
+
+
+def _ensure_vector_index_ready(settings: Settings) -> None:
+    if _vector_index_exists(settings):
+        return
+    if not settings.rag_auto_reindex_on_missing:
+        _ensure_vector_index(settings)
+
+    if not _auto_reindex_lock.acquire(blocking=False):
+        deadline = time.perf_counter() + max(settings.rag_auto_reindex_wait_seconds, 1)
+        while time.perf_counter() < deadline:
+            if _vector_index_exists(settings):
+                clear_rag_caches()
+                return
+            time.sleep(0.5)
+        raise AppError(
+            code="rag_reindex_in_progress",
+            message="Estou reconstruindo minha base de conhecimento agora. Tente novamente em alguns segundos.",
+            status_code=503,
+        )
+
+    try:
+        logger.info("rag_auto_reindex_start")
+        from ingest import ingest
+
+        ingest(settings)
+        if not _vector_index_exists(settings):
+            _ensure_vector_index(settings)
+        logger.info("rag_auto_reindex_success")
+    except AppError:
+        raise
+    except Exception as exc:
+        logger.exception("rag_auto_reindex_failed")
+        raise AppError(
+            code="rag_auto_reindex_failed",
+            message="Não consegui reconstruir a base de conhecimento automaticamente. Tente reindexar pelo admin.",
+            status_code=503,
+        ) from exc
+    finally:
+        _auto_reindex_lock.release()
+
+
 def _build_vectorstore(settings: Settings) -> Chroma:
-    _ensure_vector_index(settings)
+    _ensure_vector_index_ready(settings)
     key = (
         settings.chroma_collection,
         str(settings.resolved_chroma_dir),
@@ -443,7 +516,13 @@ User question:
             status_code=503,
         ) from exc
 
-    answer = str(response.content).strip()
+    answer = _response_content_to_text(response.content)
+    if not answer:
+        raise AppError(
+            code="empty_llm_response",
+            message="A OpenAI retornou uma resposta vazia. Tente novamente em instantes.",
+            status_code=503,
+        )
     _get_store(settings).append(session_id, clean_message, answer)
     usage = _usage_from_response(response)
     usage.update(
