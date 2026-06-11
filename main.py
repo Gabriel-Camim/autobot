@@ -13,6 +13,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
+from admin import router as admin_router
 from agent import AppError, answer_question
 from config import get_settings
 from voice import synthesize_speech_base64, transcribe_upload
@@ -37,6 +38,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(admin_router)
 
 class SourceSummaryResponse(BaseModel):
     title: str

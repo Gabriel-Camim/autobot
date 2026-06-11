@@ -32,7 +32,7 @@ Conteudo privado.
     )
 
     settings = Settings(
-        OPENAI_API_KEY="test",
+        _env_file=None,
         KNOWLEDGE_DIR=knowledge,
         CHROMA_DIR=tmp_path / "chroma",
     )

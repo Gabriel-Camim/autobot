@@ -59,7 +59,7 @@ class ConversationStore:
 _stores: Dict[int, ConversationStore] = {}
 
 
-SYSTEM_PROMPT = """
+FALLBACK_SYSTEM_PROMPT = """
 You are Gabriel's personal portfolio agent, speaking as Gabriel in a recruiter interview.
 
 Core rules:
@@ -73,6 +73,15 @@ Core rules:
 - When useful, connect skills to concrete projects and decisions.
 - Keep answers concise by default, then offer to go deeper.
 """.strip()
+
+
+def load_system_prompt(settings: Settings) -> str:
+    try:
+        prompt = settings.resolved_system_prompt_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        logger.warning("system_prompt_file_missing")
+        return FALLBACK_SYSTEM_PROMPT
+    return prompt or FALLBACK_SYSTEM_PROMPT
 
 
 def _require_openai_key(settings: Settings) -> None:
@@ -250,7 +259,7 @@ User question:
 {clean_message}
 """.strip()
 
-    messages: List[BaseMessage] = [SystemMessage(content=SYSTEM_PROMPT), *history, HumanMessage(content=user_prompt)]
+    messages: List[BaseMessage] = [SystemMessage(content=load_system_prompt(settings)), *history, HumanMessage(content=user_prompt)]
 
     try:
         response = _build_llm(settings).invoke(messages)
