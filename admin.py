@@ -33,6 +33,7 @@ _reindex_status: Dict[str, Any] = {
     "state": "idle",
     "started_at": None,
     "finished_at": None,
+    "duration_ms": None,
     "document_count": 0,
     "chunk_count": 0,
     "error": None,
@@ -105,6 +106,7 @@ class ReindexStatusResponse(BaseModel):
     state: str
     started_at: Optional[float] = None
     finished_at: Optional[float] = None
+    duration_ms: Optional[int] = None
     document_count: int = 0
     chunk_count: int = 0
     error: Optional[str] = None
@@ -464,7 +466,7 @@ def write_knowledge_file(payload: FileWriteRequest, request: Request):
     commit = _github_put(settings, normalized, payload.content, message)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(payload.content, encoding="utf-8", newline="\n")
-    log_event(settings, "admin_file_write", request=request, session_id=user.login, payload=commit.model_dump())
+    log_event(settings, "admin_file_write", request=request, session_id=user.login, actor_type="admin", payload=commit.model_dump())
     return commit
 
 
@@ -476,7 +478,7 @@ def delete_knowledge_file(path: str, request: Request):
     commit = _github_delete(settings, normalized, f"admin: delete {normalized}")
     if target.exists():
         target.unlink()
-    log_event(settings, "admin_file_delete", request=request, session_id=user.login, payload=commit.model_dump())
+    log_event(settings, "admin_file_delete", request=request, session_id=user.login, actor_type="admin", payload=commit.model_dump())
     return commit
 
 
@@ -490,7 +492,7 @@ def create_knowledge_folder(payload: FolderRequest, request: Request):
     commit = _github_put(settings, repo_path, "", message)
     target.mkdir(parents=True, exist_ok=True)
     (target / ".gitkeep").write_text("", encoding="utf-8")
-    log_event(settings, "admin_folder_create", request=request, session_id=user.login, payload=commit.model_dump())
+    log_event(settings, "admin_folder_create", request=request, session_id=user.login, actor_type="admin", payload=commit.model_dump())
     return commit
 
 
@@ -518,6 +520,7 @@ async def import_markdown(request: Request, directory: str = Form(...), files: L
         "admin_markdown_import",
         request=request,
         session_id=user.login,
+        actor_type="admin",
         payload={"directory": directory_path, "files": [result.model_dump() for result in results]},
     )
     return response
@@ -541,7 +544,7 @@ def write_prompt(payload: PromptWriteRequest, request: Request):
     commit = _github_put(settings, repo_path, payload.content, message)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(payload.content, encoding="utf-8", newline="\n")
-    log_event(settings, "admin_prompt_write", request=request, session_id=user.login, payload=commit.model_dump())
+    log_event(settings, "admin_prompt_write", request=request, session_id=user.login, actor_type="admin", payload=commit.model_dump())
     return commit
 
 
@@ -556,6 +559,7 @@ def _run_reindex(settings: Settings, actor: Optional[str] = None) -> None:
         _set_reindex_status(
             state="success",
             finished_at=time.time(),
+            duration_ms=int((time.time() - (_reindex_status.get("started_at") or time.time())) * 1000),
             document_count=len(docs),
             chunk_count=chunks,
             error=None,
@@ -564,12 +568,18 @@ def _run_reindex(settings: Settings, actor: Optional[str] = None) -> None:
             settings,
             "admin_reindex_success",
             session_id=actor,
+            actor_type="admin",
             payload={"document_count": len(docs), "chunk_count": chunks},
         )
     except Exception as exc:
         sanitized = _sanitize_error(exc)
-        _set_reindex_status(state="error", finished_at=time.time(), error=sanitized)
-        log_event(settings, "admin_reindex_error", session_id=actor, payload={"error": sanitized})
+        _set_reindex_status(
+            state="error",
+            finished_at=time.time(),
+            duration_ms=int((time.time() - (_reindex_status.get("started_at") or time.time())) * 1000),
+            error=sanitized,
+        )
+        log_event(settings, "admin_reindex_error", session_id=actor, actor_type="admin", payload={"error": sanitized})
     finally:
         _reindex_lock.release()
 
@@ -584,11 +594,12 @@ def reindex_admin(request: Request):
         state="running",
         started_at=time.time(),
         finished_at=None,
+        duration_ms=None,
         document_count=0,
         chunk_count=0,
         error=None,
     )
-    log_event(settings, "admin_reindex_start", request=request, session_id=user.login)
+    log_event(settings, "admin_reindex_start", request=request, session_id=user.login, actor_type="admin")
     thread = threading.Thread(target=_run_reindex, args=(settings, user.login), daemon=True)
     thread.start()
     return ReindexStatusResponse(**_reindex_status)
@@ -609,7 +620,12 @@ def admin_events_summary(request: Request, hours: int = Query(default=168, ge=1,
 
 
 @router.get("/events")
-def admin_events(request: Request, kind: Optional[str] = Query(default=None), limit: int = Query(default=100, ge=1, le=500)):
+def admin_events(
+    request: Request,
+    kind: Optional[str] = Query(default=None),
+    visitor_id: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+):
     settings = _settings()
     _require_admin(request, settings)
-    return {"events": list_events(settings, kind=kind, limit=limit)}
+    return {"events": list_events(settings, kind=kind, visitor_id=visitor_id, limit=limit)}

@@ -5,7 +5,7 @@ import logging
 import time
 import zipfile
 from io import BytesIO
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
@@ -13,10 +13,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
-from admin import router as admin_router
+from admin import _current_admin, router as admin_router
 from agent import AppError, answer_question
 from config import get_settings
-from events import log_event
+from events import event_storage_status, log_event
 from voice import synthesize_speech_base64, transcribe_upload
 
 
@@ -54,6 +54,8 @@ class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
     active_node: Optional[str] = None
+    visitor_id: Optional[str] = None
+    visitor_identity: Optional[Dict[str, Any]] = None
 
 
 class ChatResponse(BaseModel):
@@ -86,9 +88,50 @@ class VisitRequest(BaseModel):
     referrer: Optional[str] = None
     title: Optional[str] = None
     visitor_id: Optional[str] = None
+    visitor_identity: Optional[Dict[str, Any]] = None
     language: Optional[str] = None
     timezone: Optional[str] = None
     viewport: Optional[dict] = None
+
+
+class TrackEventRequest(BaseModel):
+    kind: str
+    visitor_id: Optional[str] = None
+    session_id: Optional[str] = None
+    visitor_identity: Optional[Dict[str, Any]] = None
+    payload: Dict[str, Any] = Field(default_factory=dict)
+
+
+PUBLIC_EVENT_KINDS = {
+    "material_download",
+    "report_open",
+    "gallery_open",
+    "gallery_navigate",
+    "visitor_identity",
+    "frontend_error",
+}
+
+
+def _actor_type(request: Request, visitor_identity: Optional[Dict[str, Any]] = None) -> str:
+    admin = _current_admin(request, settings)
+    if admin:
+        return "admin"
+    if visitor_identity and any(visitor_identity.get(field) for field in ("name", "company", "email")):
+        return "identified_visitor"
+    return "visitor"
+
+
+def _with_identity(payload: Dict[str, Any], visitor_identity: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not visitor_identity:
+        return payload
+    clean_identity = {
+        key: str(value).strip()[:160]
+        for key, value in visitor_identity.items()
+        if key in {"name", "company", "role", "email"} and str(value).strip()
+    }
+    if not clean_identity:
+        return payload
+    return {**payload, "identity": clean_identity}
 
 
 @app.middleware("http")
@@ -140,13 +183,21 @@ async def app_error_handler(request: Request, exc: AppError):
 
 @app.get("/health")
 def health():
+    materials_dir = settings.resolved_materials_dir
+    material_files = [path for path in materials_dir.rglob("*") if path.is_file()] if materials_dir.exists() else []
+    chroma_dir = settings.resolved_chroma_dir
     return {
         "status": "ok",
         "openai_configured": bool(settings.openai_api_key),
-        "chroma_dir": str(settings.resolved_chroma_dir),
-        "chroma_exists": settings.resolved_chroma_dir.exists(),
+        "chroma_dir": str(chroma_dir),
+        "chroma_exists": chroma_dir.exists() and any(chroma_dir.rglob("*")),
         "knowledge_dir": str(settings.resolved_knowledge_dir),
         "knowledge_exists": settings.resolved_knowledge_dir.exists(),
+        "materials_dir": str(materials_dir),
+        "materials_exists": materials_dir.exists(),
+        "materials_count": len(material_files),
+        "materials_dir_safe": materials_dir.exists() and settings.backend_dir.resolve() in materials_dir.resolve().parents,
+        "events": event_storage_status(settings),
     }
 
 
@@ -156,8 +207,26 @@ def track_visit(payload: VisitRequest, request: Request):
         settings,
         "site_visit",
         request=request,
+        visitor_id=payload.visitor_id,
         session_id=payload.visitor_id,
-        payload=payload.model_dump(),
+        actor_type=_actor_type(request, payload.visitor_identity),
+        payload=_with_identity(payload.model_dump(exclude={"visitor_identity"}), payload.visitor_identity),
+    )
+    return {"ok": True}
+
+
+@app.post("/events/track")
+def track_public_event(payload: TrackEventRequest, request: Request):
+    if payload.kind not in PUBLIC_EVENT_KINDS:
+        raise AppError("invalid_event_kind", "Evento público não permitido.", 400)
+    log_event(
+        settings,
+        payload.kind,
+        request=request,
+        visitor_id=payload.visitor_id,
+        session_id=payload.session_id,
+        actor_type=_actor_type(request, payload.visitor_identity),
+        payload=_with_identity(payload.payload, payload.visitor_identity),
     )
     return {"ok": True}
 
@@ -203,7 +272,9 @@ def chat(payload: ChatRequest, request: Request):
         settings,
         "chat_exchange",
         request=request,
+        visitor_id=payload.visitor_id,
         session_id=result.session_id,
+        actor_type=_actor_type(request, payload.visitor_identity),
         payload={
             "question": payload.message,
             "answer": result.answer,
@@ -211,6 +282,7 @@ def chat(payload: ChatRequest, request: Request):
             "detected_language": result.detected_language,
             "usage": result.usage,
             "sources": [source.model_dump() for source in sources],
+            **({"identity": _with_identity({}, payload.visitor_identity).get("identity")} if payload.visitor_identity else {}),
         },
     )
     return ChatResponse(
@@ -220,6 +292,50 @@ def chat(payload: ChatRequest, request: Request):
         sources_summary=sources,
         usage=result.usage,
     )
+
+
+@app.post("/chat/stream")
+def chat_stream(payload: ChatRequest, request: Request):
+    def events():
+        try:
+            result = answer_question(
+                message=payload.message,
+                session_id=payload.session_id,
+                active_node=payload.active_node,
+                settings=settings,
+            )
+            sources = [SourceSummaryResponse(**source.__dict__) for source in result.sources]
+            log_event(
+                settings,
+                "chat_exchange",
+                request=request,
+                visitor_id=payload.visitor_id,
+                session_id=result.session_id,
+                actor_type=_actor_type(request, payload.visitor_identity),
+                payload={
+                    "question": payload.message,
+                    "answer": result.answer,
+                    "active_node": payload.active_node,
+                    "detected_language": result.detected_language,
+                    "usage": result.usage,
+                    "stream": True,
+                    "sources": [source.model_dump() for source in sources],
+                    **({"identity": _with_identity({}, payload.visitor_identity).get("identity")} if payload.visitor_identity else {}),
+                },
+            )
+            body = ChatResponse(
+                session_id=result.session_id,
+                answer=result.answer,
+                detected_language=result.detected_language,
+                sources_summary=sources,
+                usage=result.usage,
+            ).model_dump()
+            yield f"event: done\ndata: {json.dumps(body, ensure_ascii=False)}\n\n"
+        except AppError as exc:
+            body = {"code": exc.code, "message": exc.message}
+            yield f"event: error\ndata: {json.dumps(body, ensure_ascii=False)}\n\n"
+
+    return StreamingResponse(events(), media_type="text/event-stream")
 
 
 @app.post("/voice/transcribe", response_model=TranscriptionResponse)
@@ -240,7 +356,18 @@ async def voice_chat(
     file: UploadFile = File(...),
     session_id: Optional[str] = Form(default=None),
     active_node: Optional[str] = Form(default=None),
+    visitor_id: Optional[str] = Form(default=None),
+    visitor_identity: Optional[str] = Form(default=None),
 ):
+    identity_data: Optional[Dict[str, Any]] = None
+    if visitor_identity:
+        try:
+            parsed = json.loads(visitor_identity)
+            if isinstance(parsed, dict):
+                identity_data = parsed
+        except json.JSONDecodeError:
+            identity_data = None
+
     transcript = await transcribe_upload(file, settings=settings)
     if not transcript:
         raise AppError(
@@ -268,7 +395,9 @@ async def voice_chat(
         settings,
         "voice_chat_exchange",
         request=request,
+        visitor_id=visitor_id,
         session_id=result.session_id,
+        actor_type=_actor_type(request, identity_data),
         payload={
             "transcript": transcript,
             "answer": result.answer,
@@ -277,6 +406,7 @@ async def voice_chat(
             "usage": result.usage,
             "tts_error": tts_error,
             "sources": [source.model_dump() for source in sources],
+            **({"identity": _with_identity({}, identity_data).get("identity")} if identity_data else {}),
         },
     )
 

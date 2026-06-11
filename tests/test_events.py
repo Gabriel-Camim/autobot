@@ -12,13 +12,28 @@ def test_log_event_and_summary(tmp_path: Path):
         ADMIN_SESSION_SECRET="secret",
     )
 
-    log_event(settings, "site_visit", session_id="visitor-1", payload={"path": "/"})
-    log_event(settings, "chat_exchange", session_id="session-1", payload={"question": "Oi", "answer": "Olá"})
+    log_event(
+        settings,
+        "site_visit",
+        visitor_id="visitor-1",
+        session_id="visitor-1",
+        actor_type="identified_visitor",
+        payload={"path": "/", "identity": {"name": "Recrutador"}},
+    )
+    log_event(
+        settings,
+        "chat_exchange",
+        visitor_id="visitor-1",
+        session_id="session-1",
+        payload={"question": "Oi", "answer": "Olá"},
+    )
 
     events = list_events(settings, limit=10)
     summary = event_summary(settings, hours=24)
 
     assert len(events) == 2
     assert events[0]["kind"] == "chat_exchange"
+    assert events[0]["visitor_id"] == "visitor-1"
     assert summary["visits"] == 1
+    assert summary["identified_visitors"] == 1
     assert summary["chat_exchanges"] == 1

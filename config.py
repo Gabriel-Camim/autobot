@@ -11,18 +11,28 @@ class Settings(BaseSettings):
 
     openai_api_key: str = Field(default="", alias="OPENAI_API_KEY")
     openai_chat_model: str = Field(default="gpt-4o", alias="OPENAI_CHAT_MODEL")
+    openai_fast_chat_model: str = Field(default="gpt-4o-mini", alias="OPENAI_FAST_CHAT_MODEL")
     openai_embedding_model: str = Field(default="text-embedding-3-small", alias="OPENAI_EMBEDDING_MODEL")
     openai_transcribe_model: str = Field(default="whisper-1", alias="OPENAI_TRANSCRIBE_MODEL")
     openai_tts_model: str = Field(default="gpt-4o-mini-tts", alias="OPENAI_TTS_MODEL")
     openai_tts_voice: str = Field(default="alloy", alias="OPENAI_TTS_VOICE")
+    openai_temperature: float = Field(default=0.1, alias="OPENAI_TEMPERATURE")
+    openai_reasoning_effort: str = Field(default="", alias="OPENAI_REASONING_EFFORT")
+    openai_text_verbosity: str = Field(default="", alias="OPENAI_TEXT_VERBOSITY")
 
     chroma_dir: Path = Field(default=Path("./chroma"), alias="CHROMA_DIR")
     chroma_collection: str = Field(default="gabriel_portfolio", alias="CHROMA_COLLECTION")
     data_dir: Path = Field(default=Path("./tmp"), alias="DATA_DIR")
     events_db_path: Path = Field(default=Path("./tmp/events.sqlite3"), alias="EVENTS_DB_PATH")
+    database_url: str = Field(default="", alias="DATABASE_URL")
     knowledge_dir: Path = Field(default=Path("./knowledge"), alias="KNOWLEDGE_DIR")
     materials_dir: Path = Field(default=Path("./materials/recruiter-pack"), alias="MATERIALS_DIR")
     system_prompt_path: Path = Field(default=Path("./prompts/system.md"), alias="SYSTEM_PROMPT_PATH")
+    rag_k: int = Field(default=8, alias="RAG_K")
+    rag_lexical_k: int = Field(default=4, alias="RAG_LEXICAL_K")
+    rag_max_distance: float = Field(default=1.55, alias="RAG_MAX_DISTANCE")
+    rag_min_docs: int = Field(default=1, alias="RAG_MIN_DOCS")
+    rag_max_context_chars: int = Field(default=14000, alias="RAG_MAX_CONTEXT_CHARS")
 
     frontend_origins: str = Field(
         default="https://frontend-nbecvxa81-camim2003-1759s-projects.vercel.app",

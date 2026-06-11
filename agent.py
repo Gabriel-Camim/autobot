@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 import logging
+import re
+import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import uuid4
 
 from langchain_chroma import Chroma
+from langchain_core.documents import Document
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
@@ -38,7 +41,7 @@ class AgentResult:
     answer: str
     detected_language: str
     sources: List[SourceSummary]
-    usage: Dict[str, int]
+    usage: Dict[str, Any]
 
 
 class ConversationStore:
@@ -57,6 +60,10 @@ class ConversationStore:
 
 
 _stores: Dict[int, ConversationStore] = {}
+_embeddings_cache: Dict[Tuple[str, str], OpenAIEmbeddings] = {}
+_vectorstore_cache: Dict[Tuple[str, str, str, str], Chroma] = {}
+_llm_cache: Dict[Tuple[str, str, float, str, str], ChatOpenAI] = {}
+_public_docs_cache: Dict[Tuple[str, int], List[Document]] = {}
 
 
 FALLBACK_SYSTEM_PROMPT = """
@@ -70,6 +77,8 @@ Core rules:
 - Be professional, natural, direct, and human. Do not sound robotic or over-marketed.
 - If the context does not contain enough information, say honestly that I do not have enough documented context yet.
 - Do not invent employers, dates, metrics, credentials, links, or personal details.
+- Do not invent skills, frameworks, libraries, employers, credentials, dates, metrics, or project status.
+- If asked for a list of skills, only list skills explicitly present in the retrieved context.
 - When useful, connect skills to concrete projects and decisions.
 - Keep answers concise by default, then offer to go deeper.
 """.strip()
@@ -102,24 +111,61 @@ def _get_store(settings: Settings) -> ConversationStore:
 
 def _build_embeddings(settings: Settings) -> OpenAIEmbeddings:
     _require_openai_key(settings)
-    return OpenAIEmbeddings(model=settings.openai_embedding_model, api_key=settings.openai_api_key)
+    key = (settings.openai_embedding_model, settings.openai_api_key[-12:])
+    if key not in _embeddings_cache:
+        _embeddings_cache[key] = OpenAIEmbeddings(model=settings.openai_embedding_model, api_key=settings.openai_api_key)
+    return _embeddings_cache[key]
+
+
+def _ensure_vector_index(settings: Settings) -> None:
+    chroma_dir = settings.resolved_chroma_dir
+    if not chroma_dir.exists() or not any(chroma_dir.rglob("*")):
+        raise AppError(
+            code="rag_not_indexed",
+            message="Minha base de conhecimento ainda não foi indexada neste deploy. Entre no admin e rode a reindexação RAG antes de usar o chat.",
+            status_code=503,
+        )
 
 
 def _build_vectorstore(settings: Settings) -> Chroma:
-    return Chroma(
-        collection_name=settings.chroma_collection,
-        persist_directory=str(settings.resolved_chroma_dir),
-        embedding_function=_build_embeddings(settings),
+    _ensure_vector_index(settings)
+    key = (
+        settings.chroma_collection,
+        str(settings.resolved_chroma_dir),
+        settings.openai_embedding_model,
+        settings.openai_api_key[-12:],
     )
+    if key not in _vectorstore_cache:
+        _vectorstore_cache[key] = Chroma(
+            collection_name=settings.chroma_collection,
+            persist_directory=str(settings.resolved_chroma_dir),
+            embedding_function=_build_embeddings(settings),
+        )
+    return _vectorstore_cache[key]
 
 
 def _build_llm(settings: Settings) -> ChatOpenAI:
     _require_openai_key(settings)
-    return ChatOpenAI(
-        model=settings.openai_chat_model,
-        temperature=0.35,
-        api_key=settings.openai_api_key,
+    key = (
+        settings.openai_chat_model,
+        settings.openai_api_key[-12:],
+        settings.openai_temperature,
+        settings.openai_reasoning_effort,
+        settings.openai_text_verbosity,
     )
+    if key not in _llm_cache:
+        model_kwargs = {}
+        if settings.openai_reasoning_effort:
+            model_kwargs["reasoning"] = {"effort": settings.openai_reasoning_effort}
+        if settings.openai_text_verbosity:
+            model_kwargs["text"] = {"verbosity": settings.openai_text_verbosity}
+        _llm_cache[key] = ChatOpenAI(
+            model=settings.openai_chat_model,
+            temperature=settings.openai_temperature,
+            api_key=settings.openai_api_key,
+            model_kwargs=model_kwargs,
+        )
+    return _llm_cache[key]
 
 
 def _detect_language(text: str) -> str:
@@ -159,26 +205,126 @@ def _detect_language(text: str) -> str:
     return "auto"
 
 
-def _format_context(docs_with_scores) -> str:
+def _tokens(text: str) -> set[str]:
+    return {token for token in re.findall(r"[\wÀ-ÿ+#.-]{3,}", text.lower())}
+
+
+def _is_skill_question(text: str, active_node: Optional[str]) -> bool:
+    normalized = text.lower()
+    markers = ("skill", "stack", "competência", "competencias", "habilidade", "hard skill", "soft skill", "tecnologia")
+    return active_node == "stack" or any(marker in normalized for marker in markers)
+
+
+def _node_terms(active_node: Optional[str]) -> set[str]:
+    mapping = {
+        "gabriel": {"gabriel", "perfil", "personalidade", "valores"},
+        "trajetoria": {"trajetoria", "trajetória", "formacao", "formação", "idiomas"},
+        "projetos": {"projetos", "autobot", "dge", "ebook", "veterinaria", "veterinária", "vetdex", "vdc"},
+        "stack": {"skills", "stack", "hard", "soft", "tecnico", "técnico", "python", "sql"},
+        "experiencia": {"experiencia", "experiência", "profissional", "desafios"},
+        "mercado": {"mercado", "dados", "ia", "automacao", "automação", "sistemas"},
+        "entrevista": {"entrevista", "faq", "perguntas", "casos"},
+        "materiais": {"materiais", "curriculo", "currículo", "recrutador"},
+    }
+    return mapping.get(active_node or "", set())
+
+
+def _doc_matches_focus(doc: Document, active_node: Optional[str], skill_question: bool) -> bool:
+    metadata = doc.metadata or {}
+    source = str(metadata.get("source", "")).lower()
+    category = str(metadata.get("category", "")).lower()
+    tags = str(metadata.get("tags", "")).lower()
+    haystack = f"{source} {category} {tags}"
+    if skill_question:
+        return any(term in haystack for term in ("skill", "stack", "hard", "soft", "competenc", "tecnico", "técnico"))
+    terms = _node_terms(active_node)
+    if not terms:
+        return True
+    return any(term in haystack for term in terms)
+
+
+def _metadata_key(doc: Document) -> str:
+    metadata = doc.metadata or {}
+    return str(metadata.get("source") or metadata.get("title") or id(doc))
+
+
+def _cached_public_documents(settings: Settings) -> List[Document]:
+    from ingest import load_public_documents
+
+    knowledge_dir = settings.resolved_knowledge_dir
+    latest_mtime = 0
+    if knowledge_dir.exists():
+        latest_mtime = max((int(path.stat().st_mtime) for path in knowledge_dir.rglob("*.md")), default=0)
+    key = (str(knowledge_dir), latest_mtime)
+    if key not in _public_docs_cache:
+        _public_docs_cache.clear()
+        _public_docs_cache[key] = load_public_documents(settings)
+    return _public_docs_cache[key]
+
+
+def _lexical_matches(settings: Settings, query: str, active_node: Optional[str], limit: int) -> List[Tuple[Document, float]]:
+    query_terms = _tokens(query) | _node_terms(active_node)
+    if not query_terms or limit <= 0:
+        return []
+    skill_question = _is_skill_question(query, active_node)
+    scored: List[Tuple[Document, float]] = []
+    for doc in _cached_public_documents(settings):
+        if not _doc_matches_focus(doc, active_node, skill_question):
+            continue
+        metadata_text = " ".join(str(value) for value in (doc.metadata or {}).values())
+        doc_terms = _tokens(f"{metadata_text}\n{doc.page_content}")
+        overlap = len(query_terms & doc_terms)
+        if overlap:
+            priority = int((doc.metadata or {}).get("priority", 3) or 3)
+            scored.append((doc, max(0.01, 2.0 - overlap - (4 - priority) * 0.15)))
+    scored.sort(key=lambda item: item[1])
+    return scored[:limit]
+
+
+def _retrieve_documents(settings: Settings, retrieval_query: str, active_node: Optional[str]) -> List[Tuple[Document, float]]:
+    vectorstore = _build_vectorstore(settings)
+    docs_with_scores = vectorstore.similarity_search_with_score(retrieval_query, k=max(settings.rag_k, 1))
+    skill_question = _is_skill_question(retrieval_query, active_node)
+    focused = [
+        (doc, score)
+        for doc, score in docs_with_scores
+        if score <= settings.rag_max_distance and _doc_matches_focus(doc, active_node, skill_question)
+    ]
+    lexical = _lexical_matches(settings, retrieval_query, active_node, settings.rag_lexical_k)
+    combined: List[Tuple[Document, float]] = []
+    seen: set[str] = set()
+    for doc, score in [*focused, *lexical]:
+        key = _metadata_key(doc)
+        if key in seen:
+            continue
+        seen.add(key)
+        combined.append((doc, score))
+    return combined[: max(settings.rag_k, 1)]
+
+
+def _format_context(docs_with_scores, max_chars: int) -> str:
     blocks = []
+    total_chars = 0
     for doc, score in docs_with_scores:
         metadata = doc.metadata or {}
         title = metadata.get("title", "Documento sem título")
         category = metadata.get("category", "geral")
         summary = metadata.get("summary", "")
         source = metadata.get("source", "")
-        blocks.append(
-            "\n".join(
-                [
-                    f"[title: {title}]",
-                    f"[category: {category}]",
-                    f"[summary: {summary}]",
-                    f"[source: {source}]",
-                    f"[score: {score}]",
-                    doc.page_content,
-                ]
-            )
+        block = "\n".join(
+            [
+                f"[title: {title}]",
+                f"[category: {category}]",
+                f"[summary: {summary}]",
+                f"[source: {source}]",
+                f"[score: {score}]",
+                doc.page_content,
+            ]
         )
+        if total_chars and total_chars + len(block) > max_chars:
+            break
+        blocks.append(block)
+        total_chars += len(block)
     return "\n\n---\n\n".join(blocks)
 
 
@@ -206,7 +352,7 @@ def _source_summaries(docs_with_scores) -> List[SourceSummary]:
     return summaries[:4]
 
 
-def _usage_from_response(response: AIMessage) -> Dict[str, int]:
+def _usage_from_response(response: AIMessage) -> Dict[str, Any]:
     usage = getattr(response, "usage_metadata", None) or {}
     return {
         "input_tokens": int(usage.get("input_tokens", 0) or 0),
@@ -222,6 +368,7 @@ def answer_question(
     settings: Optional[Settings] = None,
 ) -> AgentResult:
     settings = settings or get_settings()
+    total_start = time.perf_counter()
     session_id = session_id or str(uuid4())
     clean_message = message.strip()
     if not clean_message:
@@ -231,9 +378,9 @@ def answer_question(
     if active_node:
         retrieval_query = f"{clean_message}\nTema ativo no mapa mental: {active_node}"
 
+    retrieval_start = time.perf_counter()
     try:
-        vectorstore = _build_vectorstore(settings)
-        docs_with_scores = vectorstore.similarity_search_with_score(retrieval_query, k=5)
+        docs_with_scores = _retrieve_documents(settings, retrieval_query, active_node)
     except AppError:
         raise
     except Exception as exc:
@@ -243,10 +390,16 @@ def answer_question(
             message="Não consegui consultar a base de conhecimento agora. Tente novamente em instantes.",
             status_code=503,
         ) from exc
+    retrieval_ms = round((time.perf_counter() - retrieval_start) * 1000, 2)
 
-    context = _format_context(docs_with_scores) if docs_with_scores else ""
-    if not context:
-        context = "No relevant Markdown context was retrieved for this question."
+    if len(docs_with_scores) < settings.rag_min_docs:
+        raise AppError(
+            code="rag_weak_context",
+            message="Não encontrei contexto suficiente nos Markdown para responder com segurança. Posso responder melhor depois que essa parte for documentada ou reindexada.",
+            status_code=422,
+        )
+
+    context = _format_context(docs_with_scores, settings.rag_max_context_chars)
 
     history = _get_store(settings).get(session_id)
     user_prompt = f"""
@@ -255,6 +408,12 @@ Retrieved Markdown context:
 
 Active mind-map node: {active_node or "none"}
 
+Grounding guardrails:
+- Use only the retrieved Markdown context above as factual basis.
+- If the context does not explicitly mention a tool, skill, date, employer, metric, or credential, do not mention it as mine.
+- For skill lists, list only technologies explicitly present in the context.
+- If context is insufficient, say that this is not documented yet.
+
 User question:
 {clean_message}
 """.strip()
@@ -262,7 +421,9 @@ User question:
     messages: List[BaseMessage] = [SystemMessage(content=load_system_prompt(settings)), *history, HumanMessage(content=user_prompt)]
 
     try:
+        llm_start = time.perf_counter()
         response = _build_llm(settings).invoke(messages)
+        llm_ms = round((time.perf_counter() - llm_start) * 1000, 2)
     except AppError:
         raise
     except Exception as exc:
@@ -275,11 +436,21 @@ User question:
 
     answer = str(response.content).strip()
     _get_store(settings).append(session_id, clean_message, answer)
+    usage = _usage_from_response(response)
+    usage.update(
+        {
+            "model": settings.openai_chat_model,
+            "retrieval_ms": retrieval_ms,
+            "llm_ms": llm_ms,
+            "total_ms": round((time.perf_counter() - total_start) * 1000, 2),
+            "retrieved_docs": len(docs_with_scores),
+        }
+    )
 
     return AgentResult(
         session_id=session_id,
         answer=answer,
         detected_language=_detect_language(clean_message),
         sources=_source_summaries(docs_with_scores),
-        usage=_usage_from_response(response),
+        usage=usage,
     )
