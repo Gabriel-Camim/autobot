@@ -17,7 +17,7 @@ summary: Formação acadêmica, cursos e idiomas do Gabriel.
 
 ## Data Science - FIAP
 
-Tenho previsão de cursar Data Science na FIAP entre julho de 2026 e dezembro de 2028. Essa formação está alinhada com meu objetivo de consolidar minha atuação em dados, IA aplicada, modelagem, analytics e sistemas inteligentes.
+Tenho previsão de cursar Data Science na FIAP entre julho de 2026 e julho de 2028. Essa formação está alinhada com meu objetivo de consolidar minha atuação em dados, IA aplicada, modelagem, analytics e sistemas inteligentes.
 
 ## Medicina Veterinária - UNISA
 
