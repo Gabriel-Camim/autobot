@@ -9,7 +9,7 @@ import threading
 import time
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, List, Literal, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
 from fastapi import APIRouter, File, Form, Query, Request, UploadFile
@@ -178,6 +178,12 @@ def _read_session_token(token: str, settings: Settings) -> Optional[AdminUser]:
     return AdminUser(login=login, name=payload.get("name"), avatar_url=payload.get("avatar_url"))
 
 
+def _admin_redirect_with_token(settings: Settings, token: str) -> str:
+    parts = urlsplit(settings.admin_redirect_url)
+    fragment = urlencode({"admin_token": token})
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, fragment))
+
+
 def _set_cookie(response, name: str, value: str, settings: Settings, max_age: int) -> None:
     response.set_cookie(
         name,
@@ -194,7 +200,14 @@ def _clear_cookie(response, name: str, settings: Settings) -> None:
 
 
 def _current_admin(request: Request, settings: Settings) -> Optional[AdminUser]:
-    return _read_session_token(request.cookies.get(settings.admin_cookie_name, ""), settings)
+    cookie_user = _read_session_token(request.cookies.get(settings.admin_cookie_name, ""), settings)
+    if cookie_user:
+        return cookie_user
+    authorization = request.headers.get("authorization", "")
+    scheme, _, token = authorization.partition(" ")
+    if scheme.lower() == "bearer" and token:
+        return _read_session_token(token.strip(), settings)
+    return None
 
 
 def _require_admin(request: Request, settings: Settings) -> AdminUser:
@@ -436,8 +449,9 @@ def github_callback(request: Request, code: str = Query(default=""), state: str 
     if login.lower() not in settings.admin_github_user_list:
         raise AppError("admin_forbidden", "Este usuário GitHub não está autorizado para o painel.", 403)
 
-    response = RedirectResponse(settings.admin_redirect_url)
-    _set_cookie(response, settings.admin_cookie_name, _session_token(user, settings), settings, max_age=settings.admin_session_hours * 3600)
+    session_token = _session_token(user, settings)
+    response = RedirectResponse(_admin_redirect_with_token(settings, session_token))
+    _set_cookie(response, settings.admin_cookie_name, session_token, settings, max_age=settings.admin_session_hours * 3600)
     _clear_cookie(response, settings.admin_state_cookie_name, settings)
     return response
 

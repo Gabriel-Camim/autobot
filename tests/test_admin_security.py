@@ -1,8 +1,9 @@
 from pathlib import Path
 
 import pytest
+from starlette.requests import Request
 
-from admin import _github_oauth_token_error, _read_session_token, _resolve_content_path, _session_token
+from admin import _admin_redirect_with_token, _current_admin, _github_oauth_token_error, _read_session_token, _resolve_content_path, _session_token
 from agent import AppError, FALLBACK_SYSTEM_PROMPT, load_system_prompt
 from config import Settings
 
@@ -45,6 +46,26 @@ def test_admin_session_is_signed_and_limited_to_allowed_users(tmp_path: Path):
     assert user is not None
     assert user.login == "Gabriel-Camim"
     assert _read_session_token(token + "tamper", settings) is None
+
+
+def test_admin_accepts_bearer_session_token(tmp_path: Path):
+    settings = make_settings(tmp_path)
+    token = _session_token({"login": "Gabriel-Camim", "name": "Gabriel", "avatar_url": None}, settings)
+    request = Request({"type": "http", "headers": [(b"authorization", f"Bearer {token}".encode("utf-8"))]})
+
+    user = _current_admin(request, settings)
+
+    assert user is not None
+    assert user.login == "Gabriel-Camim"
+
+
+def test_admin_redirect_puts_session_token_in_fragment(tmp_path: Path):
+    settings = make_settings(tmp_path)
+    settings.public_frontend_url = "https://frontend.example.com"
+
+    redirect_url = _admin_redirect_with_token(settings, "signed-token")
+
+    assert redirect_url == "https://frontend.example.com/admin#admin_token=signed-token"
 
 
 def test_system_prompt_loads_from_file_and_falls_back(tmp_path: Path):
