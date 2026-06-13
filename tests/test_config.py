@@ -13,3 +13,24 @@ def test_cors_regex_can_disable_local_dev():
 
     assert "127\\.0\\.0\\.1" not in settings.cors_allow_origin_regex
     assert "vercel" in settings.cors_allow_origin_regex
+
+
+def test_public_frontend_url_extends_cors_and_admin_redirect():
+    settings = Settings(
+        _env_file=None,
+        PUBLIC_FRONTEND_URL="https://frontend-staging.example.com/",
+        ADMIN_FRONTEND_URL="https://frontend-production.example.com",
+    )
+
+    assert "https://frontend-staging.example.com" in settings.frontend_origin_list
+    assert settings.admin_redirect_url == "https://frontend-staging.example.com/admin"
+
+
+def test_public_backend_url_overrides_admin_callback_base():
+    settings = Settings(
+        _env_file=None,
+        PUBLIC_BACKEND_URL="https://backend-staging.example.com/",
+        ADMIN_PUBLIC_BASE_URL="https://backend-production.example.com",
+    )
+
+    assert settings.admin_callback_base_url == "https://backend-staging.example.com"

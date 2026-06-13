@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     openai_use_responses_api: bool = Field(default=True, alias="OPENAI_USE_RESPONSES_API")
     app_version: str = Field(default="1.0.0", alias="APP_VERSION")
     app_commit: str = Field(default="", alias="APP_COMMIT")
+    app_env: str = Field(default="development", alias="APP_ENV")
+    public_backend_url: str = Field(default="", alias="PUBLIC_BACKEND_URL")
+    public_frontend_url: str = Field(default="", alias="PUBLIC_FRONTEND_URL")
 
     chroma_dir: Path = Field(default=Path("./chroma"), alias="CHROMA_DIR")
     chroma_collection: str = Field(default="gabriel_portfolio", alias="CHROMA_COLLECTION")
@@ -71,7 +74,12 @@ class Settings(BaseSettings):
 
     @property
     def frontend_origin_list(self) -> List[str]:
-        return [origin.strip() for origin in self.frontend_origins.split(",") if origin.strip()]
+        origins = [origin.strip() for origin in self.frontend_origins.split(",") if origin.strip()]
+        for origin in (self.public_frontend_url, self.admin_frontend_url):
+            normalized = origin.strip().rstrip("/")
+            if normalized and normalized not in origins:
+                origins.append(normalized)
+        return origins
 
     @property
     def cors_allow_origin_regex(self) -> str:
@@ -90,12 +98,18 @@ class Settings(BaseSettings):
 
     @property
     def admin_redirect_url(self) -> str:
-        if self.admin_frontend_url:
-            return self.admin_frontend_url.rstrip("/") + "/admin"
+        frontend_url = (self.public_frontend_url or self.admin_frontend_url).strip()
+        if frontend_url:
+            return frontend_url.rstrip("/") + "/admin"
         origins = self.frontend_origin_list
         if origins:
             return origins[0].rstrip("/") + "/admin"
         return "http://localhost:5173/admin"
+
+    @property
+    def admin_callback_base_url(self) -> str:
+        backend_url = (self.public_backend_url or self.admin_public_base_url).strip()
+        return backend_url.rstrip("/")
 
     @property
     def backend_dir(self) -> Path:

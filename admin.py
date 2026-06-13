@@ -361,7 +361,7 @@ def github_login():
         raise AppError("admin_not_configured", "Configure GitHub OAuth e ADMIN_SESSION_SECRET no Render.", 503)
 
     state = secrets.token_urlsafe(32)
-    redirect_uri = settings.admin_public_base_url.rstrip("/") + "/admin/auth/github/callback"
+    redirect_uri = settings.admin_callback_base_url + "/admin/auth/github/callback"
     params = urlencode(
         {
             "client_id": settings.github_oauth_client_id,
@@ -387,7 +387,7 @@ def github_callback(request: Request, code: str = Query(default=""), state: str 
     if not code:
         raise AppError("admin_oauth_missing_code", "GitHub não retornou código de autorização.", 400)
 
-    redirect_uri = settings.admin_public_base_url.rstrip("/") + "/admin/auth/github/callback"
+    redirect_uri = settings.admin_callback_base_url + "/admin/auth/github/callback"
     try:
         with httpx.Client(timeout=20) as client:
             token_response = client.post(
