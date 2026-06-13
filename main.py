@@ -30,12 +30,8 @@ app = FastAPI(title="Gabriel Portfolio Agent", version="0.1.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        *settings.frontend_origin_list,
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-    ],
-    allow_origin_regex=r"https://.*\.vercel\.app",
+    allow_origins=settings.frontend_origin_list,
+    allow_origin_regex=settings.cors_allow_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -232,6 +228,9 @@ def health():
         "chroma_exists": chroma_dir.exists() and any(chroma_dir.rglob("*")),
         "chroma_writable": _writable_directory_status(chroma_dir),
         "rag_auto_reindex_on_missing": settings.rag_auto_reindex_on_missing,
+        "cors_local_enabled": settings.allow_local_cors,
+        "frontend_origins": settings.frontend_origin_list,
+        "local_origin_regex": settings.local_frontend_origin_regex if settings.allow_local_cors else "",
         "knowledge_dir": str(settings.resolved_knowledge_dir),
         "knowledge_exists": settings.resolved_knowledge_dir.exists(),
         "materials_dir": str(materials_dir),

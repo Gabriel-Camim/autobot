@@ -44,6 +44,11 @@ class Settings(BaseSettings):
         default="https://frontend-nbecvxa81-camim2003-1759s-projects.vercel.app",
         alias="FRONTEND_ORIGINS",
     )
+    allow_local_cors: bool = Field(default=True, alias="ALLOW_LOCAL_CORS")
+    local_frontend_origin_regex: str = Field(
+        default=r"^http://(localhost|127\.0\.0\.1):(5173|5174|5175|4173)$",
+        alias="LOCAL_FRONTEND_ORIGIN_REGEX",
+    )
     max_upload_mb: int = Field(default=25, alias="MAX_UPLOAD_MB")
     max_history_messages: int = Field(default=12, alias="MAX_HISTORY_MESSAGES")
 
@@ -67,6 +72,13 @@ class Settings(BaseSettings):
     @property
     def frontend_origin_list(self) -> List[str]:
         return [origin.strip() for origin in self.frontend_origins.split(",") if origin.strip()]
+
+    @property
+    def cors_allow_origin_regex(self) -> str:
+        patterns = [r"https://.*\.vercel\.app"]
+        if self.allow_local_cors and self.local_frontend_origin_regex.strip():
+            patterns.append(self.local_frontend_origin_regex.strip())
+        return "|".join(f"(?:{pattern})" for pattern in patterns)
 
     @property
     def admin_github_user_list(self) -> List[str]:
