@@ -15,5 +15,5 @@ Pendente de preenchimento.
 Sugestáo:
 
 - Portugues: idioma nativo.
-- Ingles: nivel, conforto em entrevista, leitura técnica, escrita e reunioes.
+- Ingles: nivel, conforto em entrevista, leitura e escrita avançada.
 - Outros idiomas, se houver.
