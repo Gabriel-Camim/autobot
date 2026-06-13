@@ -220,7 +220,7 @@
             },
             {
               "name": "X-API-KEY",
-              "value": "={{ $env.GAMMA_API_KEY || \"sk-gamma-substituir\" }}"
+              "value": "={{ $env.GAMMA_API_KEY || \"gamma-key-substituir\" }}"
             }
           ]
         },
