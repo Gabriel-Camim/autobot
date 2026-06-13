@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from admin import _current_admin, router as admin_router
-from agent import AppError, answer_question
+from agent import AppError, AgentResult, answer_question, stream_answer_question
 from config import get_settings
 from events import event_storage_status, log_event
 from voice import synthesize_speech_base64, transcribe_upload
@@ -84,6 +84,18 @@ class VoiceChatResponse(ChatResponse):
     tts_error: Optional[str] = None
 
 
+class TTSRequest(BaseModel):
+    text: str
+    visitor_id: Optional[str] = None
+    session_id: Optional[str] = None
+    visitor_identity: Optional[Dict[str, Any]] = None
+
+
+class TTSResponse(BaseModel):
+    audio_base64: str
+    audio_mime_type: str = "audio/mpeg"
+
+
 class VisitRequest(BaseModel):
     path: str = "/"
     referrer: Optional[str] = None
@@ -144,6 +156,21 @@ def _with_identity(payload: Dict[str, Any], visitor_identity: Optional[Dict[str,
     if not clean_identity:
         return payload
     return {**payload, "identity": clean_identity}
+
+
+def _chat_response_from_result(result: AgentResult) -> ChatResponse:
+    sources = [SourceSummaryResponse(**source.__dict__) for source in result.sources]
+    return ChatResponse(
+        session_id=result.session_id,
+        answer=result.answer,
+        detected_language=result.detected_language,
+        sources_summary=sources,
+        usage=result.usage,
+    )
+
+
+def _sse(event: str, data: Dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 @app.middleware("http")
@@ -212,6 +239,11 @@ def health():
         "materials_count": len(material_files),
         "materials_dir_safe": materials_dir.exists() and settings.backend_dir.resolve() in materials_dir.resolve().parents,
         "events": event_storage_status(settings),
+        "version": getattr(settings, "app_version", "1.0.0"),
+        "commit": getattr(settings, "app_commit", ""),
+        "chat_model": settings.openai_chat_model,
+        "fast_chat_model": settings.openai_fast_chat_model,
+        "embedding_model": settings.openai_embedding_model,
     }
 
 
@@ -281,7 +313,7 @@ def chat(payload: ChatRequest, request: Request):
         active_node=payload.active_node,
         settings=settings,
     )
-    sources = [SourceSummaryResponse(**source.__dict__) for source in result.sources]
+    response_body = _chat_response_from_result(result)
     log_event(
         settings,
         "chat_exchange",
@@ -295,59 +327,67 @@ def chat(payload: ChatRequest, request: Request):
             "active_node": payload.active_node,
             "detected_language": result.detected_language,
             "usage": result.usage,
-            "sources": [source.model_dump() for source in sources],
+            "sources": [source.model_dump() for source in response_body.sources_summary],
             **({"identity": _with_identity({}, payload.visitor_identity).get("identity")} if payload.visitor_identity else {}),
         },
     )
-    return ChatResponse(
-        session_id=result.session_id,
-        answer=result.answer,
-        detected_language=result.detected_language,
-        sources_summary=sources,
-        usage=result.usage,
-    )
+    return response_body
 
 
 @app.post("/chat/stream")
 def chat_stream(payload: ChatRequest, request: Request):
     def events():
         try:
-            result = answer_question(
+            for item in stream_answer_question(
                 message=payload.message,
                 session_id=payload.session_id,
                 active_node=payload.active_node,
                 settings=settings,
-            )
-            sources = [SourceSummaryResponse(**source.__dict__) for source in result.sources]
-            log_event(
-                settings,
-                "chat_exchange",
-                request=request,
-                visitor_id=payload.visitor_id,
-                session_id=result.session_id,
-                actor_type=_actor_type(request, payload.visitor_identity),
-                payload={
-                    "question": payload.message,
-                    "answer": result.answer,
-                    "active_node": payload.active_node,
-                    "detected_language": result.detected_language,
-                    "usage": result.usage,
-                    "stream": True,
-                    "sources": [source.model_dump() for source in sources],
-                    **({"identity": _with_identity({}, payload.visitor_identity).get("identity")} if payload.visitor_identity else {}),
-                },
-            )
-            body = ChatResponse(
-                session_id=result.session_id,
-                answer=result.answer,
-                detected_language=result.detected_language,
-                sources_summary=sources,
-                usage=result.usage,
-            ).model_dump()
-            yield f"event: done\ndata: {json.dumps(body, ensure_ascii=False)}\n\n"
+            ):
+                if item.get("event") != "done":
+                    yield _sse(item["event"], item.get("data", {}))
+                    continue
+
+                result = item["result"]
+                response_body = _chat_response_from_result(result)
+                yield _sse("stage", {"id": "saving_event", "label": "Salvando evento", "status": "active"})
+                event_start = time.perf_counter()
+                log_event(
+                    settings,
+                    "chat_exchange",
+                    request=request,
+                    visitor_id=payload.visitor_id,
+                    session_id=result.session_id,
+                    actor_type=_actor_type(request, payload.visitor_identity),
+                    payload={
+                        "question": payload.message,
+                        "answer": result.answer,
+                        "active_node": payload.active_node,
+                        "detected_language": result.detected_language,
+                        "usage": result.usage,
+                        "stream": True,
+                        "sources": [source.model_dump() for source in response_body.sources_summary],
+                        **({"identity": _with_identity({}, payload.visitor_identity).get("identity")} if payload.visitor_identity else {}),
+                    },
+                )
+                event_log_ms = round((time.perf_counter() - event_start) * 1000, 2)
+                response_body.usage["event_log_ms"] = event_log_ms
+                yield _sse("stage", {"id": "saving_event", "label": "Salvando evento", "status": "complete", "elapsed_ms": event_log_ms})
+                yield _sse("metrics", response_body.usage)
+                yield _sse("done", response_body.model_dump())
         except AppError as exc:
             body = {"code": exc.code, "message": exc.message}
-            yield f"event: error\ndata: {json.dumps(body, ensure_ascii=False)}\n\n"
+            log_event(
+                settings,
+                "app_error",
+                request=request,
+                visitor_id=payload.visitor_id,
+                session_id=payload.session_id,
+                actor_type=_actor_type(request, payload.visitor_identity),
+                payload={"code": exc.code, "message": exc.message, "status_code": exc.status_code, "stream": True},
+            )
+            yield _sse("stage", {"id": "error", "label": "Erro no processamento", "status": "error"})
+            yield _sse("error", body)
 
     return StreamingResponse(events(), media_type="text/event-stream")
 
@@ -362,6 +402,24 @@ async def voice_transcribe(file: UploadFile = File(...)):
             status_code=422,
         )
     return TranscriptionResponse(transcript=transcript)
+
+
+@app.post("/voice/tts", response_model=TTSResponse)
+def voice_tts(payload: TTSRequest, request: Request):
+    audio_base64 = synthesize_speech_base64(payload.text, settings=settings)
+    log_event(
+        settings,
+        "tts_synthesis",
+        request=request,
+        visitor_id=payload.visitor_id,
+        session_id=payload.session_id,
+        actor_type=_actor_type(request, payload.visitor_identity),
+        payload={
+            "text_chars": len(payload.text or ""),
+            **({"identity": _with_identity({}, payload.visitor_identity).get("identity")} if payload.visitor_identity else {}),
+        },
+    )
+    return TTSResponse(audio_base64=audio_base64)
 
 
 @app.post("/voice/chat", response_model=VoiceChatResponse)

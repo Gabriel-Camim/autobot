@@ -3,6 +3,7 @@ from pathlib import Path
 import pytest
 from langchain_core.documents import Document
 
+import agent
 from agent import AppError, _doc_matches_focus, _ensure_vector_index, _expand_retrieval_query, _lexical_matches, _response_content_to_text
 from config import Settings
 
@@ -93,3 +94,31 @@ Sistema com PostgreSQL, BI, Superset, contratos de dados, KPIs e reforecast.
     assert "skills/hard-skills.md" in sources
     assert "projetos/ebookgenerator/overview.md" in sources
     assert "projetos/dge/overview.md" in sources
+
+
+def test_stream_answer_question_emits_stages_deltas_and_done(monkeypatch):
+    class FakeChunk:
+        def __init__(self, content, usage=None):
+            self.content = content
+            self.usage_metadata = usage or {}
+
+    class FakeLlm:
+        def stream(self, _messages):
+            yield FakeChunk("Minha ")
+            yield FakeChunk("stack é Python.", {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14})
+
+    doc = Document(
+        page_content="Gabriel usa Python e FastAPI.",
+        metadata={"source": "skills/stack-tecnico.md", "title": "Stack", "category": "skills", "summary": "Stack técnica."},
+    )
+    monkeypatch.setattr(agent, "_retrieve_documents", lambda _settings, _query, _active_node: [(doc, 0.1)])
+    monkeypatch.setattr(agent, "_build_llm", lambda _settings, _model=None: FakeLlm())
+
+    settings = Settings(_env_file=None, OPENAI_API_KEY="test-key")
+    events = list(agent.stream_answer_question("qual sua stack?", session_id="stream-test", active_node="stack", settings=settings))
+
+    assert any(event["event"] == "stage" and event["data"]["id"] == "retrieving_context" for event in events)
+    assert [event["data"]["text"] for event in events if event["event"] == "delta"] == ["Minha ", "stack é Python."]
+    done = [event for event in events if event["event"] == "done"][0]
+    assert done["result"].answer == "Minha stack é Python."
+    assert done["result"].usage["time_to_first_token_ms"] is not None

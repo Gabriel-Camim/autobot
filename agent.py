@@ -5,7 +5,7 @@ import re
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 from uuid import uuid4
 
 from langchain_chroma import Chroma
@@ -45,6 +45,17 @@ class AgentResult:
     usage: Dict[str, Any]
 
 
+@dataclass
+class PreparedAgentRun:
+    session_id: str
+    clean_message: str
+    retrieval_query: str
+    docs_with_scores: List[Tuple[Document, float]]
+    messages: List[BaseMessage]
+    retrieval_ms: float
+    total_start: float
+
+
 class ConversationStore:
     def __init__(self, max_messages: int):
         self.max_messages = max_messages
@@ -65,6 +76,7 @@ _embeddings_cache: Dict[Tuple[str, str], OpenAIEmbeddings] = {}
 _vectorstore_cache: Dict[Tuple[str, str, str, str], Chroma] = {}
 _llm_cache: Dict[Tuple[str, str, float, str, str, bool], ChatOpenAI] = {}
 _public_docs_cache: Dict[Tuple[str, int], List[Document]] = {}
+_system_prompt_cache: Dict[str, Tuple[int, str]] = {}
 _auto_reindex_lock = threading.Lock()
 
 
@@ -88,16 +100,25 @@ Core rules:
 
 def load_system_prompt(settings: Settings) -> str:
     try:
-        prompt = settings.resolved_system_prompt_path.read_text(encoding="utf-8").strip()
+        prompt_path = settings.resolved_system_prompt_path
+        cache_key = str(prompt_path)
+        mtime = int(prompt_path.stat().st_mtime)
+        cached = _system_prompt_cache.get(cache_key)
+        if cached and cached[0] == mtime:
+            return cached[1]
+        prompt = prompt_path.read_text(encoding="utf-8").strip()
     except OSError:
         logger.warning("system_prompt_file_missing")
         return FALLBACK_SYSTEM_PROMPT
-    return prompt or FALLBACK_SYSTEM_PROMPT
+    resolved_prompt = prompt or FALLBACK_SYSTEM_PROMPT
+    _system_prompt_cache[cache_key] = (mtime, resolved_prompt)
+    return resolved_prompt
 
 
 def clear_rag_caches() -> None:
     _vectorstore_cache.clear()
     _public_docs_cache.clear()
+    _system_prompt_cache.clear()
 
 
 def _response_content_to_text(content: Any) -> str:
@@ -124,6 +145,32 @@ def _response_content_to_text(content: Any) -> str:
                     parts.append(nested_text)
         return "\n".join(part.strip() for part in parts if part and part.strip()).strip()
     return str(content).strip()
+
+
+def _response_content_to_delta(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: List[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            item_type = str(item.get("type") or "")
+            if item_type == "reasoning":
+                continue
+            if isinstance(item.get("text"), str):
+                parts.append(item["text"])
+                continue
+            nested = item.get("content")
+            if isinstance(nested, (list, str)):
+                nested_text = _response_content_to_delta(nested)
+                if nested_text:
+                    parts.append(nested_text)
+        return "".join(parts)
+    return str(content)
 
 
 def _require_openai_key(settings: Settings) -> None:
@@ -222,10 +269,11 @@ def _build_vectorstore(settings: Settings) -> Chroma:
     return _vectorstore_cache[key]
 
 
-def _build_llm(settings: Settings) -> ChatOpenAI:
+def _build_llm(settings: Settings, model: Optional[str] = None) -> ChatOpenAI:
     _require_openai_key(settings)
+    model = model or settings.openai_chat_model
     key = (
-        settings.openai_chat_model,
+        model,
         settings.openai_api_key[-12:],
         settings.openai_temperature,
         settings.openai_reasoning_effort,
@@ -233,14 +281,14 @@ def _build_llm(settings: Settings) -> ChatOpenAI:
         settings.openai_use_responses_api,
     )
     if key not in _llm_cache:
-        model_name = settings.openai_chat_model.lower()
+        model_name = model.lower()
         supports_reasoning_effort = model_name.startswith("gpt-5") or model_name.startswith(("o1", "o3", "o4"))
         supports_verbosity = model_name.startswith("gpt-5")
         reasoning_effort = settings.openai_reasoning_effort if supports_reasoning_effort else None
         verbosity = settings.openai_text_verbosity if supports_verbosity else None
         use_responses_api = bool(settings.openai_use_responses_api and (supports_reasoning_effort or supports_verbosity))
         _llm_cache[key] = ChatOpenAI(
-            model=settings.openai_chat_model,
+            model=model,
             temperature=settings.openai_temperature,
             api_key=settings.openai_api_key,
             reasoning_effort=reasoning_effort,
@@ -561,12 +609,36 @@ def _usage_from_response(response: AIMessage) -> Dict[str, Any]:
     }
 
 
-def answer_question(
+def _stage(stage_id: str, label: str, status: str = "active", **extra: Any) -> Dict[str, Any]:
+    payload = {"id": stage_id, "label": label, "status": status}
+    payload.update({key: value for key, value in extra.items() if value is not None})
+    return {"event": "stage", "data": payload}
+
+
+def _build_user_prompt(context: str, active_node: Optional[str], clean_message: str) -> str:
+    return f"""
+Retrieved Markdown context:
+{context}
+
+Active mind-map node: {active_node or "none"}
+
+Grounding guardrails:
+- Use only the retrieved Markdown context above as factual basis.
+- If the context does not explicitly mention a tool, skill, date, employer, metric, or credential, do not mention it as mine.
+- For skill lists, list only technologies explicitly present in the context.
+- If context is insufficient, say that this is not documented yet.
+
+User question:
+{clean_message}
+""".strip()
+
+
+def _prepare_agent_run(
     message: str,
     session_id: Optional[str] = None,
     active_node: Optional[str] = None,
     settings: Optional[Settings] = None,
-) -> AgentResult:
+) -> PreparedAgentRun:
     settings = settings or get_settings()
     total_start = time.perf_counter()
     session_id = session_id or str(uuid4())
@@ -575,7 +647,6 @@ def answer_question(
         raise AppError(code="empty_message", message="Envie uma pergunta ou mensagem para conversar.", status_code=400)
 
     retrieval_query = _expand_retrieval_query(clean_message, active_node)
-
     retrieval_start = time.perf_counter()
     try:
         docs_with_scores = _retrieve_documents(settings, retrieval_query, active_node)
@@ -598,29 +669,77 @@ def answer_question(
         )
 
     context = _format_context(docs_with_scores, settings.rag_max_context_chars)
-
     history = _get_store(settings).get(session_id)
-    user_prompt = f"""
-Retrieved Markdown context:
-{context}
-
-Active mind-map node: {active_node or "none"}
-
-Grounding guardrails:
-- Use only the retrieved Markdown context above as factual basis.
-- If the context does not explicitly mention a tool, skill, date, employer, metric, or credential, do not mention it as mine.
-- For skill lists, list only technologies explicitly present in the context.
-- If context is insufficient, say that this is not documented yet.
-
-User question:
-{clean_message}
-""".strip()
-
+    user_prompt = _build_user_prompt(context, active_node, clean_message)
     messages: List[BaseMessage] = [SystemMessage(content=load_system_prompt(settings)), *history, HumanMessage(content=user_prompt)]
+    return PreparedAgentRun(
+        session_id=session_id,
+        clean_message=clean_message,
+        retrieval_query=retrieval_query,
+        docs_with_scores=docs_with_scores,
+        messages=messages,
+        retrieval_ms=retrieval_ms,
+        total_start=total_start,
+    )
+
+
+def _finalize_agent_result(
+    prepared: PreparedAgentRun,
+    answer: str,
+    settings: Settings,
+    usage: Optional[Dict[str, Any]] = None,
+    *,
+    llm_ms: float,
+    time_to_first_token_ms: Optional[float] = None,
+    model: Optional[str] = None,
+    fallback_used: bool = False,
+) -> AgentResult:
+    answer = answer.strip()
+    if not answer:
+        raise AppError(
+            code="empty_llm_response",
+            message="A OpenAI retornou uma resposta vazia. Tente novamente em instantes.",
+            status_code=503,
+        )
+    _get_store(settings).append(prepared.session_id, prepared.clean_message, answer)
+    usage = usage or {}
+    usage.update(
+        {
+            "model": model or settings.openai_chat_model,
+            "fallback_used": fallback_used,
+            "retrieval_ms": prepared.retrieval_ms,
+            "llm_ms": llm_ms,
+            "time_to_first_token_ms": time_to_first_token_ms,
+            "total_ms": round((time.perf_counter() - prepared.total_start) * 1000, 2),
+            "retrieved_docs": len(prepared.docs_with_scores),
+            "retrieved_sources": [
+                str((doc.metadata or {}).get("source", ""))
+                for doc, _score in prepared.docs_with_scores
+                if (doc.metadata or {}).get("source")
+            ],
+        }
+    )
+    return AgentResult(
+        session_id=prepared.session_id,
+        answer=answer,
+        detected_language=_detect_language(prepared.clean_message),
+        sources=_source_summaries(prepared.docs_with_scores),
+        usage=usage,
+    )
+
+
+def answer_question(
+    message: str,
+    session_id: Optional[str] = None,
+    active_node: Optional[str] = None,
+    settings: Optional[Settings] = None,
+) -> AgentResult:
+    settings = settings or get_settings()
+    prepared = _prepare_agent_run(message, session_id, active_node, settings)
 
     try:
         llm_start = time.perf_counter()
-        response = _build_llm(settings).invoke(messages)
+        response = _build_llm(settings).invoke(prepared.messages)
         llm_ms = round((time.perf_counter() - llm_start) * 1000, 2)
     except AppError:
         raise
@@ -633,33 +752,142 @@ User question:
         ) from exc
 
     answer = _response_content_to_text(response.content)
-    if not answer:
-        raise AppError(
-            code="empty_llm_response",
-            message="A OpenAI retornou uma resposta vazia. Tente novamente em instantes.",
-            status_code=503,
-        )
-    _get_store(settings).append(session_id, clean_message, answer)
-    usage = _usage_from_response(response)
-    usage.update(
-        {
-            "model": settings.openai_chat_model,
-            "retrieval_ms": retrieval_ms,
-            "llm_ms": llm_ms,
-            "total_ms": round((time.perf_counter() - total_start) * 1000, 2),
-            "retrieved_docs": len(docs_with_scores),
-            "retrieved_sources": [
-                str((doc.metadata or {}).get("source", ""))
-                for doc, _score in docs_with_scores
-                if (doc.metadata or {}).get("source")
-            ],
-        }
+    return _finalize_agent_result(
+        prepared,
+        answer,
+        settings,
+        _usage_from_response(response),
+        llm_ms=llm_ms,
+        model=settings.openai_chat_model,
     )
 
-    return AgentResult(
-        session_id=session_id,
-        answer=answer,
-        detected_language=_detect_language(clean_message),
-        sources=_source_summaries(docs_with_scores),
-        usage=usage,
+
+def stream_answer_question(
+    message: str,
+    session_id: Optional[str] = None,
+    active_node: Optional[str] = None,
+    settings: Optional[Settings] = None,
+) -> Iterator[Dict[str, Any]]:
+    settings = settings or get_settings()
+    total_start = time.perf_counter()
+    yield _stage("received", "Pergunta recebida", "complete", elapsed_ms=0)
+
+    clean_message = message.strip()
+    if not clean_message:
+        raise AppError(code="empty_message", message="Envie uma pergunta ou mensagem para conversar.", status_code=400)
+
+    yield _stage("expanding_query", "Expandindo consulta", "active")
+    query_start = time.perf_counter()
+    retrieval_query = _expand_retrieval_query(clean_message, active_node)
+    yield _stage("expanding_query", "Expandindo consulta", "complete", elapsed_ms=round((time.perf_counter() - query_start) * 1000, 2))
+
+    yield _stage("retrieving_context", "Buscando Markdown", "active")
+    retrieval_start = time.perf_counter()
+    try:
+        docs_with_scores = _retrieve_documents(settings, retrieval_query, active_node)
+    except AppError:
+        raise
+    except Exception as exc:
+        logger.exception("rag_retrieval_failed")
+        raise AppError(
+            code="rag_unavailable",
+            message="Não consegui consultar a base de conhecimento agora. Tente novamente em instantes.",
+            status_code=503,
+        ) from exc
+    retrieval_ms = round((time.perf_counter() - retrieval_start) * 1000, 2)
+    yield _stage("retrieving_context", "Buscando Markdown", "complete", elapsed_ms=retrieval_ms, docs=len(docs_with_scores))
+
+    if len(docs_with_scores) < settings.rag_min_docs:
+        raise AppError(
+            code="rag_weak_context",
+            message="Não encontrei contexto suficiente nos Markdown para responder com segurança. Posso responder melhor depois que essa parte for documentada ou reindexada.",
+            status_code=422,
+        )
+
+    yield _stage("selecting_evidence", "Selecionando evidências", "active")
+    evidence_start = time.perf_counter()
+    context = _format_context(docs_with_scores, settings.rag_max_context_chars)
+    history = _get_store(settings).get(session_id or "")
+    user_prompt = _build_user_prompt(context, active_node, clean_message)
+    messages: List[BaseMessage] = [SystemMessage(content=load_system_prompt(settings)), *history, HumanMessage(content=user_prompt)]
+    prepared = PreparedAgentRun(
+        session_id=session_id or str(uuid4()),
+        clean_message=clean_message,
+        retrieval_query=retrieval_query,
+        docs_with_scores=docs_with_scores,
+        messages=messages,
+        retrieval_ms=retrieval_ms,
+        total_start=total_start,
     )
+    yield _stage("selecting_evidence", "Selecionando evidências", "complete", elapsed_ms=round((time.perf_counter() - evidence_start) * 1000, 2))
+
+    yield _stage("generating_answer", "Gerando resposta", "active", model=settings.openai_chat_model)
+    llm_start = time.perf_counter()
+    first_token_ms: Optional[float] = None
+    answer = ""
+    usage: Dict[str, Any] = {}
+    model_used = settings.openai_chat_model
+    fallback_used = False
+
+    try:
+        for chunk in _build_llm(settings, model_used).stream(messages):
+            chunk_usage = getattr(chunk, "usage_metadata", None) or {}
+            if chunk_usage:
+                usage = {
+                    "input_tokens": int(chunk_usage.get("input_tokens", 0) or 0),
+                    "output_tokens": int(chunk_usage.get("output_tokens", 0) or 0),
+                    "total_tokens": int(chunk_usage.get("total_tokens", 0) or 0),
+                }
+            chunk_text = _response_content_to_delta(getattr(chunk, "content", ""))
+            if not chunk_text:
+                continue
+            if chunk_text.startswith(answer):
+                delta = chunk_text[len(answer) :]
+            else:
+                delta = chunk_text
+            if not delta:
+                continue
+            if first_token_ms is None:
+                first_token_ms = round((time.perf_counter() - llm_start) * 1000, 2)
+            answer += delta
+            yield {"event": "delta", "data": {"text": delta}}
+    except Exception as exc:
+        logger.exception("llm_stream_failed")
+        if answer or not settings.openai_fast_chat_model or settings.openai_fast_chat_model == settings.openai_chat_model:
+            raise AppError(
+                code="llm_unavailable",
+                message="Não consegui gerar a resposta com a OpenAI agora. Verifique créditos, chave e limite de uso.",
+                status_code=503,
+            ) from exc
+        fallback_used = True
+        model_used = settings.openai_fast_chat_model
+        yield _stage("generating_answer", "Gerando resposta", "active", detail="Usando modelo rápido de fallback", model=model_used)
+        try:
+            response = _build_llm(settings, model_used).invoke(messages)
+        except Exception as fallback_exc:
+            logger.exception("llm_fallback_failed")
+            raise AppError(
+                code="llm_unavailable",
+                message="Não consegui gerar a resposta com a OpenAI agora. Verifique créditos, chave e limite de uso.",
+                status_code=503,
+            ) from fallback_exc
+        answer = _response_content_to_text(response.content)
+        usage = _usage_from_response(response)
+        if answer:
+            first_token_ms = first_token_ms or round((time.perf_counter() - llm_start) * 1000, 2)
+            yield {"event": "delta", "data": {"text": answer}}
+
+    llm_ms = round((time.perf_counter() - llm_start) * 1000, 2)
+    yield _stage("generating_answer", "Gerando resposta", "complete", elapsed_ms=llm_ms, model=model_used)
+
+    result = _finalize_agent_result(
+        prepared,
+        answer,
+        settings,
+        usage,
+        llm_ms=llm_ms,
+        time_to_first_token_ms=first_token_ms,
+        model=model_used,
+        fallback_used=fallback_used,
+    )
+    yield {"event": "done", "result": result}

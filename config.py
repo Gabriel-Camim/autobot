@@ -20,6 +20,8 @@ class Settings(BaseSettings):
     openai_reasoning_effort: str = Field(default="low", alias="OPENAI_REASONING_EFFORT")
     openai_text_verbosity: str = Field(default="medium", alias="OPENAI_TEXT_VERBOSITY")
     openai_use_responses_api: bool = Field(default=True, alias="OPENAI_USE_RESPONSES_API")
+    app_version: str = Field(default="1.0.0", alias="APP_VERSION")
+    app_commit: str = Field(default="", alias="APP_COMMIT")
 
     chroma_dir: Path = Field(default=Path("./chroma"), alias="CHROMA_DIR")
     chroma_collection: str = Field(default="gabriel_portfolio", alias="CHROMA_COLLECTION")
