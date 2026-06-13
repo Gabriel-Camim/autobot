@@ -11,6 +11,10 @@ def _running_on_render() -> bool:
     return any(os.getenv(name) for name in ("RENDER", "RENDER_SERVICE_ID", "RENDER_EXTERNAL_HOSTNAME"))
 
 
+def _is_local_origin(origin: str) -> bool:
+    return origin.startswith("http://localhost:") or origin.startswith("http://127.0.0.1:")
+
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
@@ -79,7 +83,11 @@ class Settings(BaseSettings):
 
     @property
     def frontend_origin_list(self) -> List[str]:
-        origins = [origin.strip() for origin in self.frontend_origins.split(",") if origin.strip()]
+        origins = []
+        for origin in (origin.strip().rstrip("/") for origin in self.frontend_origins.split(",") if origin.strip()):
+            if not self.allow_local_cors and _is_local_origin(origin):
+                continue
+            origins.append(origin)
         for origin in (self.public_frontend_url, self.admin_frontend_url):
             normalized = origin.strip().rstrip("/")
             if normalized and normalized not in origins:

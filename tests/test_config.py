@@ -15,6 +15,16 @@ def test_cors_regex_can_disable_local_dev():
     assert "vercel" in settings.cors_allow_origin_regex
 
 
+def test_frontend_origins_filter_local_when_local_cors_disabled():
+    settings = Settings(
+        _env_file=None,
+        ALLOW_LOCAL_CORS=False,
+        FRONTEND_ORIGINS="https://frontend.example.com,http://localhost:5173,http://127.0.0.1:5174",
+    )
+
+    assert settings.frontend_origin_list == ["https://frontend.example.com"]
+
+
 def test_render_defaults_to_production_without_local_cors(monkeypatch):
     monkeypatch.setenv("RENDER_SERVICE_ID", "srv-test")
 
