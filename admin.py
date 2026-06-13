@@ -219,6 +219,18 @@ def _sanitize_error(exc: Exception) -> str:
     return message[:500]
 
 
+def _github_oauth_token_error(payload: Any, status_code: int) -> str:
+    if isinstance(payload, dict):
+        parts = [
+            str(payload.get("error") or "").strip(),
+            str(payload.get("error_description") or "").strip(),
+        ]
+        details = " - ".join(part for part in parts if part)
+        if details:
+            return _sanitize_error(RuntimeError(details))
+    return f"status {status_code}"
+
+
 def _normalize_posix_path(raw_path: str) -> str:
     cleaned = raw_path.strip().replace("\\", "/").strip("/")
     if not cleaned:
@@ -392,7 +404,7 @@ def github_callback(request: Request, code: str = Query(default=""), state: str 
         with httpx.Client(timeout=20) as client:
             token_response = client.post(
                 GITHUB_TOKEN,
-                headers={"Accept": "application/json"},
+                headers={"Accept": "application/json", "User-Agent": "gabriel-portfolio-admin"},
                 data={
                     "client_id": settings.github_oauth_client_id,
                     "client_secret": settings.github_oauth_client_secret,
@@ -402,9 +414,11 @@ def github_callback(request: Request, code: str = Query(default=""), state: str 
                 },
             )
             token_response.raise_for_status()
-            access_token = token_response.json().get("access_token")
+            token_payload = token_response.json()
+            access_token = token_payload.get("access_token") if isinstance(token_payload, dict) else None
             if not access_token:
-                raise AppError("admin_oauth_token_missing", "GitHub não retornou token de acesso.", 401)
+                details = _github_oauth_token_error(token_payload, token_response.status_code)
+                raise AppError("admin_oauth_token_missing", f"GitHub não retornou token de acesso: {details}.", 401)
             user_response = client.get(
                 f"{GITHUB_API}/user",
                 headers={

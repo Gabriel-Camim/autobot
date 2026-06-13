@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from admin import _read_session_token, _resolve_content_path, _session_token
+from admin import _github_oauth_token_error, _read_session_token, _resolve_content_path, _session_token
 from agent import AppError, FALLBACK_SYSTEM_PROMPT, load_system_prompt
 from config import Settings
 
@@ -56,3 +56,15 @@ def test_system_prompt_loads_from_file_and_falls_back(tmp_path: Path):
 
     missing_settings = Settings(_env_file=None, SYSTEM_PROMPT_PATH=tmp_path / "missing.md")
     assert load_system_prompt(missing_settings) == FALLBACK_SYSTEM_PROMPT
+
+
+def test_github_oauth_token_error_includes_provider_reason():
+    payload = {
+        "error": "incorrect_client_credentials",
+        "error_description": "The client_id and/or client_secret passed are incorrect.",
+    }
+
+    message = _github_oauth_token_error(payload, 200)
+
+    assert "incorrect_client_credentials" in message
+    assert "client_secret" in message
