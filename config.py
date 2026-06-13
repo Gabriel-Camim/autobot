@@ -1,9 +1,14 @@
+import os
 from functools import lru_cache
 from pathlib import Path
 from typing import List
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+def _running_on_render() -> bool:
+    return any(os.getenv(name) for name in ("RENDER", "RENDER_SERVICE_ID", "RENDER_EXTERNAL_HOSTNAME"))
 
 
 class Settings(BaseSettings):
@@ -20,9 +25,9 @@ class Settings(BaseSettings):
     openai_reasoning_effort: str = Field(default="low", alias="OPENAI_REASONING_EFFORT")
     openai_text_verbosity: str = Field(default="medium", alias="OPENAI_TEXT_VERBOSITY")
     openai_use_responses_api: bool = Field(default=True, alias="OPENAI_USE_RESPONSES_API")
-    app_version: str = Field(default="1.0.0", alias="APP_VERSION")
+    app_version: str = Field(default="1.1.0", alias="APP_VERSION")
     app_commit: str = Field(default="", alias="APP_COMMIT")
-    app_env: str = Field(default="development", alias="APP_ENV")
+    app_env: str = Field(default_factory=lambda: "production" if _running_on_render() else "development", alias="APP_ENV")
     public_backend_url: str = Field(default="", alias="PUBLIC_BACKEND_URL")
     public_frontend_url: str = Field(default="", alias="PUBLIC_FRONTEND_URL")
 
@@ -47,7 +52,7 @@ class Settings(BaseSettings):
         default="https://frontend-nbecvxa81-camim2003-1759s-projects.vercel.app",
         alias="FRONTEND_ORIGINS",
     )
-    allow_local_cors: bool = Field(default=True, alias="ALLOW_LOCAL_CORS")
+    allow_local_cors: bool = Field(default_factory=lambda: not _running_on_render(), alias="ALLOW_LOCAL_CORS")
     local_frontend_origin_regex: str = Field(
         default=r"^http://(localhost|127\.0\.0\.1):(5173|5174|5175|4173)$",
         alias="LOCAL_FRONTEND_ORIGIN_REGEX",
