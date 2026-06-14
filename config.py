@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     rag_auto_reindex_on_missing: bool = Field(default=True, alias="RAG_AUTO_REINDEX_ON_MISSING")
     rag_auto_reindex_wait_seconds: int = Field(default=90, alias="RAG_AUTO_REINDEX_WAIT_SECONDS")
     rag_excluded_source_prefixes: str = Field(default="reports/", alias="RAG_EXCLUDED_SOURCE_PREFIXES")
+    vectorstore_backend: str = Field(default="chroma", alias="VECTORSTORE_BACKEND")
+    pgvector_table: str = Field(default="rag_chunks", alias="PGVECTOR_TABLE")
+    pgvector_dimension: int = Field(default=3072, alias="PGVECTOR_DIMENSION")
 
     frontend_origins: str = Field(
         default="https://frontend-nbecvxa81-camim2003-1759s-projects.vercel.app",
@@ -108,6 +111,11 @@ class Settings(BaseSettings):
     @property
     def rag_excluded_source_prefix_list(self) -> List[str]:
         return [prefix.strip().strip("/") + "/" for prefix in self.rag_excluded_source_prefixes.split(",") if prefix.strip()]
+
+    @property
+    def vector_backend(self) -> str:
+        backend = self.vectorstore_backend.strip().lower()
+        return backend if backend in {"chroma", "pgvector"} else "chroma"
 
     @property
     def admin_redirect_url(self) -> str:

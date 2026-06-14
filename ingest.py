@@ -17,6 +17,7 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from agent import AppError, clear_rag_caches
 from config import Settings, get_settings
+from pgvector_store import pgvector_index_documents, uses_pgvector
 
 
 REQUIRED_VISIBILITY = "public"
@@ -140,6 +141,11 @@ def ingest(settings: Settings) -> int:
 
     splitter = RecursiveCharacterTextSplitter(chunk_size=900, chunk_overlap=120)
     chunks = splitter.split_documents(base_documents)
+
+    if uses_pgvector(settings):
+        count = pgvector_index_documents(settings, chunks)
+        clear_rag_caches()
+        return count
 
     _reset_chroma_dir(settings)
     embeddings = OpenAIEmbeddings(model=settings.openai_embedding_model, api_key=settings.openai_api_key)

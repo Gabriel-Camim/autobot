@@ -4,7 +4,16 @@ import pytest
 from langchain_core.documents import Document
 
 import agent
-from agent import AppError, _doc_matches_focus, _ensure_vector_index, _expand_retrieval_query, _lexical_matches, _response_content_to_text
+from agent import (
+    AppError,
+    _doc_matches_focus,
+    _ensure_vector_index,
+    _ensure_vector_index_ready,
+    _expand_retrieval_query,
+    _lexical_matches,
+    _response_content_to_text,
+    sanitize_answer_text,
+)
 from config import Settings
 
 
@@ -39,6 +48,23 @@ def test_response_content_list_extracts_only_text():
     ]
 
     assert _response_content_to_text(content) == "Minha stack combina Python, FastAPI e LangChain."
+
+
+def test_sanitize_answer_removes_markdown_bold_markers():
+    assert sanitize_answer_text("**Hard skills:** Python e SQL.") == "Hard skills: Python e SQL."
+
+
+def test_pgvector_missing_index_does_not_auto_reindex(monkeypatch):
+    def fake_status(_settings):
+        return {"backend": "pgvector", "ready": False, "chunks": 0, "last_reindex_at": None, "error": None}
+
+    monkeypatch.setattr(agent, "pgvector_status", fake_status)
+    settings = Settings(_env_file=None, VECTORSTORE_BACKEND="pgvector", DATABASE_URL="postgresql://example")
+
+    with pytest.raises(AppError) as error:
+        _ensure_vector_index_ready(settings)
+
+    assert error.value.code == "rag_not_indexed"
 
 
 def test_lexical_retrieval_crosses_active_node_and_project_context(tmp_path: Path):
@@ -122,3 +148,59 @@ def test_stream_answer_question_emits_stages_deltas_and_done(monkeypatch):
     done = [event for event in events if event["event"] == "done"][0]
     assert done["result"].answer == "Minha stack é Python."
     assert done["result"].usage["time_to_first_token_ms"] is not None
+
+
+def test_stream_answer_question_sanitizes_split_bold_markers(monkeypatch):
+    class FakeChunk:
+        def __init__(self, content, usage=None):
+            self.content = content
+            self.usage_metadata = usage or {}
+
+    class FakeLlm:
+        def stream(self, _messages):
+            yield FakeChunk("*")
+            yield FakeChunk("*Hard skills:*")
+            yield FakeChunk("* Python.", {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14})
+
+    doc = Document(
+        page_content="Gabriel usa Python e SQL.",
+        metadata={"source": "skills/hard-skills.md", "title": "Hard skills", "category": "skills", "summary": "Stack tecnica."},
+    )
+    monkeypatch.setattr(agent, "_retrieve_documents", lambda _settings, _query, _active_node: [(doc, 0.1)])
+    monkeypatch.setattr(agent, "_build_llm", lambda _settings, _model=None: FakeLlm())
+
+    settings = Settings(_env_file=None, OPENAI_API_KEY="test-key")
+    events = list(agent.stream_answer_question("quais hard skills?", session_id="stream-test", active_node="stack", settings=settings))
+
+    deltas = "".join(event["data"]["text"] for event in events if event["event"] == "delta")
+    done = [event for event in events if event["event"] == "done"][0]
+    assert deltas == "Hard skills: Python."
+    assert done["result"].answer == "Hard skills: Python."
+    assert "**" not in done["result"].answer
+
+
+def test_stream_answer_question_handles_aggregate_chunks_after_sanitizing(monkeypatch):
+    class FakeChunk:
+        def __init__(self, content, usage=None):
+            self.content = content
+            self.usage_metadata = usage or {}
+
+    class FakeLlm:
+        def stream(self, _messages):
+            yield FakeChunk("**Hard skills")
+            yield FakeChunk("**Hard skills:** Python.", {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14})
+
+    doc = Document(
+        page_content="Gabriel usa Python.",
+        metadata={"source": "skills/hard-skills.md", "title": "Hard skills", "category": "skills", "summary": "Stack tecnica."},
+    )
+    monkeypatch.setattr(agent, "_retrieve_documents", lambda _settings, _query, _active_node: [(doc, 0.1)])
+    monkeypatch.setattr(agent, "_build_llm", lambda _settings, _model=None: FakeLlm())
+
+    settings = Settings(_env_file=None, OPENAI_API_KEY="test-key")
+    events = list(agent.stream_answer_question("quais hard skills?", session_id="stream-test", active_node="stack", settings=settings))
+
+    deltas = "".join(event["data"]["text"] for event in events if event["event"] == "delta")
+    done = [event for event in events if event["event"] == "done"][0]
+    assert deltas == "Hard skills: Python."
+    assert done["result"].answer == "Hard skills: Python."

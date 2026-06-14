@@ -18,7 +18,9 @@ from admin import _current_admin, router as admin_router
 from agent import AppError, AgentResult, answer_question, stream_answer_question
 from config import get_settings
 from events import event_storage_status, log_event
+from pgvector_store import pgvector_status, uses_pgvector
 from voice import synthesize_speech_base64, transcribe_upload
+from warmup import start_warmup, warmup_status
 
 
 settings = get_settings()
@@ -38,6 +40,11 @@ app.add_middleware(
 )
 
 app.include_router(admin_router)
+
+
+@app.on_event("startup")
+def startup_warmup() -> None:
+    start_warmup(settings, actor="startup")
 
 class SourceSummaryResponse(BaseModel):
     title: str
@@ -221,13 +228,25 @@ def health():
     materials_dir = settings.resolved_materials_dir
     material_files = [path for path in materials_dir.rglob("*") if path.is_file()] if materials_dir.exists() else []
     chroma_dir = settings.resolved_chroma_dir
+    chroma_exists = chroma_dir.exists() and any(chroma_dir.rglob("*"))
+    vector_status = (
+        pgvector_status(settings)
+        if uses_pgvector(settings)
+        else {"backend": "chroma", "ready": chroma_exists, "chunks": None, "last_reindex_at": None, "error": None}
+    )
     return {
         "status": "ok",
         "openai_configured": bool(settings.openai_api_key),
         "chroma_dir": str(chroma_dir),
-        "chroma_exists": chroma_dir.exists() and any(chroma_dir.rglob("*")),
+        "chroma_exists": chroma_exists,
         "chroma_writable": _writable_directory_status(chroma_dir),
         "rag_auto_reindex_on_missing": settings.rag_auto_reindex_on_missing,
+        "vector_backend": vector_status["backend"],
+        "vector_index_ready": vector_status["ready"],
+        "vector_chunks": vector_status["chunks"],
+        "last_reindex_at": vector_status["last_reindex_at"],
+        "vector_error": vector_status["error"],
+        "warmup_status": warmup_status(),
         "app_env": settings.app_env,
         "public_backend_url": settings.public_backend_url,
         "public_frontend_url": settings.public_frontend_url,
@@ -391,7 +410,15 @@ def chat_stream(payload: ChatRequest, request: Request):
             yield _sse("stage", {"id": "error", "label": "Erro no processamento", "status": "error"})
             yield _sse("error", body)
 
-    return StreamingResponse(events(), media_type="text/event-stream")
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @app.post("/voice/transcribe", response_model=TranscriptionResponse)

@@ -14,6 +14,7 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from config import Settings, get_settings
+from pgvector_store import pgvector_similarity_search, pgvector_status, uses_pgvector
 
 
 logger = logging.getLogger("gabriel_agent")
@@ -80,6 +81,35 @@ _system_prompt_cache: Dict[str, Tuple[int, str]] = {}
 _auto_reindex_lock = threading.Lock()
 
 
+def sanitize_answer_text(text: str) -> str:
+    return (text or "").replace("**", "").strip()
+
+
+def _sanitize_stream_delta(text: str, state: Dict[str, bool]) -> str:
+    output: List[str] = []
+    for char in text or "":
+        if state.get("pending_star"):
+            if char == "*":
+                state["pending_star"] = False
+                continue
+            output.append("*")
+            output.append(char)
+            state["pending_star"] = False
+            continue
+        if char == "*":
+            state["pending_star"] = True
+            continue
+        output.append(char)
+    return "".join(output)
+
+
+def _flush_stream_sanitizer(state: Dict[str, bool]) -> str:
+    if state.get("pending_star"):
+        state["pending_star"] = False
+        return "*"
+    return ""
+
+
 FALLBACK_SYSTEM_PROMPT = """
 You are Gabriel's personal portfolio agent, speaking as Gabriel in a recruiter interview.
 
@@ -95,6 +125,7 @@ Core rules:
 - If asked for a list of skills, only list skills explicitly present in the retrieved context.
 - When useful, connect skills to concrete projects and decisions.
 - Keep answers concise by default, then offer to go deeper.
+- Do not use Markdown bold or italic markers such as **.
 """.strip()
 
 
@@ -208,6 +239,8 @@ def _ensure_vector_index(settings: Settings) -> None:
 
 
 def _vector_index_exists(settings: Settings) -> bool:
+    if uses_pgvector(settings):
+        return bool(pgvector_status(settings).get("ready"))
     chroma_dir = settings.resolved_chroma_dir
     return chroma_dir.exists() and any(chroma_dir.rglob("*"))
 
@@ -215,6 +248,16 @@ def _vector_index_exists(settings: Settings) -> bool:
 def _ensure_vector_index_ready(settings: Settings) -> None:
     if _vector_index_exists(settings):
         return
+    if uses_pgvector(settings):
+        status = pgvector_status(settings)
+        raise AppError(
+            code="rag_not_indexed",
+            message=(
+                "Minha base vetorial persistente ainda não está pronta. "
+                "Entre no admin e rode a reindexação RAG antes de usar o chat."
+            ),
+            status_code=503 if not status.get("error") else 500,
+        )
     if not settings.rag_auto_reindex_on_missing:
         _ensure_vector_index(settings)
 
@@ -515,10 +558,14 @@ def _lexical_matches(settings: Settings, query: str, active_node: Optional[str],
 
 
 def _retrieve_documents(settings: Settings, retrieval_query: str, active_node: Optional[str]) -> List[Tuple[Document, float]]:
-    vectorstore = _build_vectorstore(settings)
     vector_limit = max(settings.rag_k * 4, 24)
     lexical_limit = max(settings.rag_lexical_k, settings.rag_k * 3, 12)
-    docs_with_scores = vectorstore.similarity_search_with_score(retrieval_query, k=vector_limit)
+    if uses_pgvector(settings):
+        _ensure_vector_index_ready(settings)
+        docs_with_scores = pgvector_similarity_search(settings, retrieval_query, vector_limit, assume_ready=True)
+    else:
+        vectorstore = _build_vectorstore(settings)
+        docs_with_scores = vectorstore.similarity_search_with_score(retrieval_query, k=vector_limit)
     candidates: List[Tuple[Document, float, str, float]] = []
 
     for doc, score in docs_with_scores:
@@ -548,6 +595,20 @@ def _retrieve_documents(settings: Settings, retrieval_query: str, active_node: O
         if len(selected) >= max(settings.rag_k, 1):
             break
     return selected
+
+
+def warm_rag(settings: Optional[Settings] = None) -> Dict[str, Any]:
+    settings = settings or get_settings()
+    load_system_prompt(settings)
+    _build_embeddings(settings)
+    docs = _cached_public_documents(settings)
+    if uses_pgvector(settings):
+        status = pgvector_status(settings)
+        return {"documents": len(docs), "vector": status}
+    ready = _vector_index_exists(settings)
+    if ready:
+        _build_vectorstore(settings)
+    return {"documents": len(docs), "vector": {"backend": "chroma", "ready": ready, "chunks": None, "error": None}}
 
 
 def _format_context(docs_with_scores, max_chars: int) -> str:
@@ -694,7 +755,7 @@ def _finalize_agent_result(
     model: Optional[str] = None,
     fallback_used: bool = False,
 ) -> AgentResult:
-    answer = answer.strip()
+    answer = sanitize_answer_text(answer)
     if not answer:
         raise AppError(
             code="empty_llm_response",
@@ -751,7 +812,7 @@ def answer_question(
             status_code=503,
         ) from exc
 
-    answer = _response_content_to_text(response.content)
+    answer = sanitize_answer_text(_response_content_to_text(response.content))
     return _finalize_agent_result(
         prepared,
         answer,
@@ -825,6 +886,8 @@ def stream_answer_question(
     llm_start = time.perf_counter()
     first_token_ms: Optional[float] = None
     answer = ""
+    raw_stream_text = ""
+    sanitizer_state: Dict[str, bool] = {"pending_star": False}
     usage: Dict[str, Any] = {}
     model_used = settings.openai_chat_model
     fallback_used = False
@@ -841,10 +904,13 @@ def stream_answer_question(
             chunk_text = _response_content_to_delta(getattr(chunk, "content", ""))
             if not chunk_text:
                 continue
-            if chunk_text.startswith(answer):
-                delta = chunk_text[len(answer) :]
+            if raw_stream_text and len(raw_stream_text) >= 12 and chunk_text.startswith(raw_stream_text):
+                delta = chunk_text[len(raw_stream_text) :]
+                raw_stream_text = chunk_text
             else:
                 delta = chunk_text
+                raw_stream_text += chunk_text
+            delta = _sanitize_stream_delta(delta, sanitizer_state)
             if not delta:
                 continue
             if first_token_ms is None:
@@ -871,11 +937,16 @@ def stream_answer_question(
                 message="Não consegui gerar a resposta com a OpenAI agora. Verifique créditos, chave e limite de uso.",
                 status_code=503,
             ) from fallback_exc
-        answer = _response_content_to_text(response.content)
+        answer = sanitize_answer_text(_response_content_to_text(response.content))
         usage = _usage_from_response(response)
         if answer:
             first_token_ms = first_token_ms or round((time.perf_counter() - llm_start) * 1000, 2)
             yield {"event": "delta", "data": {"text": answer}}
+
+    tail = _flush_stream_sanitizer(sanitizer_state)
+    if tail:
+        answer += tail
+        yield {"event": "delta", "data": {"text": tail}}
 
     llm_ms = round((time.perf_counter() - llm_start) * 1000, 2)
     yield _stage("generating_answer", "Gerando resposta", "complete", elapsed_ms=llm_ms, model=model_used)

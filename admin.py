@@ -20,6 +20,7 @@ from agent import AppError
 from config import Settings, get_settings
 from events import event_summary, list_events, log_event
 from ingest import ingest, load_public_documents
+from warmup import start_warmup, warmup_status
 
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -638,6 +639,22 @@ def reindex_status(request: Request):
     settings = _settings()
     _require_admin(request, settings)
     return ReindexStatusResponse(**_reindex_status)
+
+
+@router.post("/warmup")
+def warmup_admin(request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    status = start_warmup(settings, actor=user.login)
+    log_event(settings, "admin_warmup_start", request=request, session_id=user.login, actor_type="admin", payload=status)
+    return status
+
+
+@router.get("/warmup/status")
+def warmup_admin_status(request: Request):
+    settings = _settings()
+    _require_admin(request, settings)
+    return warmup_status()
 
 
 @router.get("/events/summary")
