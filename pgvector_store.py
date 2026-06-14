@@ -159,14 +159,15 @@ def pgvector_index_documents(settings: Settings, chunks: List[Document]) -> int:
         conn.execute(f"TRUNCATE TABLE {table}")
         if not rows:
             return 0
-        conn.executemany(
-            f"""
-            INSERT INTO {table}
-            (id, content_hash, source, title, category, tags, priority, updated_at, summary, content, metadata_json, embedding, reindexed_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s)
-            """,
-            rows,
-        )
+        with conn.cursor() as cursor:
+            cursor.executemany(
+                f"""
+                INSERT INTO {table}
+                (id, content_hash, source, title, category, tags, priority, updated_at, summary, content, metadata_json, embedding, reindexed_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::vector, %s)
+                """,
+                rows,
+            )
     return len(rows)
 
 
