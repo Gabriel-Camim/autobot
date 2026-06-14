@@ -20,6 +20,7 @@ from agent import AppError
 from config import Settings, get_settings
 from events import event_summary, list_events, log_event
 from ingest import ingest, load_public_documents
+from job_scans import delete_job_scan, get_job_scan, list_job_scans
 from warmup import start_warmup, warmup_status
 
 
@@ -674,3 +675,37 @@ def admin_events(
     settings = _settings()
     _require_admin(request, settings)
     return {"events": list_events(settings, kind=kind, visitor_id=visitor_id, limit=limit)}
+
+
+@router.get("/jobs/scans")
+def admin_job_scans(
+    request: Request,
+    status: Optional[str] = Query(default=None),
+    visitor_id: Optional[str] = Query(default=None),
+    company: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    settings = _settings()
+    _require_admin(request, settings)
+    return {"scans": list_job_scans(settings, status=status, visitor_id=visitor_id, company=company, limit=limit)}
+
+
+@router.get("/jobs/scans/{scan_id}")
+def admin_job_scan_detail(scan_id: str, request: Request):
+    settings = _settings()
+    _require_admin(request, settings)
+    scan = get_job_scan(settings, scan_id)
+    if not scan:
+        raise AppError("job_scan_not_found", "Vaga scaneada não encontrada.", 404)
+    return scan
+
+
+@router.delete("/jobs/scans/{scan_id}")
+def admin_job_scan_delete(scan_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    deleted = delete_job_scan(settings, scan_id)
+    if not deleted:
+        raise AppError("job_scan_not_found", "Vaga scaneada não encontrada.", 404)
+    log_event(settings, "admin_job_scan_delete", request=request, session_id=user.login, actor_type="admin", payload={"scan_id": scan_id})
+    return {"ok": True, "scan_id": scan_id}
