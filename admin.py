@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import threading
 import time
@@ -180,8 +181,46 @@ def _read_session_token(token: str, settings: Settings) -> Optional[AdminUser]:
     return AdminUser(login=login, name=payload.get("name"), avatar_url=payload.get("avatar_url"))
 
 
-def _admin_redirect_with_token(settings: Settings, token: str) -> str:
-    parts = urlsplit(settings.admin_redirect_url)
+def _is_allowed_frontend_return(settings: Settings, return_to: str) -> bool:
+    parts = urlsplit(return_to)
+    if parts.scheme not in {"http", "https"} or not parts.netloc:
+        return False
+    origin = f"{parts.scheme}://{parts.netloc}"
+    if origin.rstrip("/") in settings.frontend_origin_list:
+        return True
+    try:
+        return bool(re.fullmatch(settings.cors_allow_origin_regex, origin))
+    except re.error:
+        return False
+
+
+def _sanitize_admin_return_to(settings: Settings, return_to: Optional[str]) -> Optional[str]:
+    if not return_to:
+        return None
+    parts = urlsplit(return_to.strip())
+    if not parts.path.startswith("/admin"):
+        return None
+    clean = urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, ""))
+    return clean if _is_allowed_frontend_return(settings, clean) else None
+
+
+def _oauth_state_cookie_value(state: str, return_to: Optional[str]) -> str:
+    payload = {"state": state, "return_to": return_to or ""}
+    return _b64(json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode("utf-8"))
+
+
+def _read_oauth_state_cookie(value: str) -> tuple[str, Optional[str]]:
+    if not value:
+        return "", None
+    try:
+        payload = json.loads(_unb64(value).decode("utf-8"))
+    except (ValueError, json.JSONDecodeError):
+        return value, None
+    return str(payload.get("state") or ""), str(payload.get("return_to") or "") or None
+
+
+def _admin_redirect_with_token(settings: Settings, token: str, return_to: Optional[str] = None) -> str:
+    parts = urlsplit(return_to or settings.admin_redirect_url)
     fragment = urlencode({"admin_token": token})
     return urlunsplit((parts.scheme, parts.netloc, parts.path, parts.query, fragment))
 
@@ -382,12 +421,13 @@ def admin_session(request: Request):
 
 
 @router.get("/auth/github/login")
-def github_login():
+def github_login(return_to: Optional[str] = Query(default=None)):
     settings = _settings()
     if not _admin_configured(settings):
         raise AppError("admin_not_configured", "Configure GitHub OAuth e ADMIN_SESSION_SECRET no Render.", 503)
 
     state = secrets.token_urlsafe(32)
+    safe_return_to = _sanitize_admin_return_to(settings, return_to)
     redirect_uri = settings.admin_callback_base_url + "/admin/auth/github/callback"
     params = urlencode(
         {
@@ -399,7 +439,7 @@ def github_login():
         }
     )
     response = RedirectResponse(f"{GITHUB_AUTHORIZE}?{params}")
-    _set_cookie(response, settings.admin_state_cookie_name, state, settings, max_age=600)
+    _set_cookie(response, settings.admin_state_cookie_name, _oauth_state_cookie_value(state, safe_return_to), settings, max_age=600)
     return response
 
 
@@ -408,7 +448,7 @@ def github_callback(request: Request, code: str = Query(default=""), state: str 
     settings = _settings()
     if not _admin_configured(settings):
         raise AppError("admin_not_configured", "Configure GitHub OAuth e ADMIN_SESSION_SECRET no Render.", 503)
-    expected_state = request.cookies.get(settings.admin_state_cookie_name, "")
+    expected_state, return_to = _read_oauth_state_cookie(request.cookies.get(settings.admin_state_cookie_name, ""))
     if not state or not expected_state or not secrets.compare_digest(state, expected_state):
         raise AppError("admin_oauth_state_invalid", "Sessão OAuth inválida. Tente login novamente.", 401)
     if not code:
@@ -452,7 +492,7 @@ def github_callback(request: Request, code: str = Query(default=""), state: str 
         raise AppError("admin_forbidden", "Este usuário GitHub não está autorizado para o painel.", 403)
 
     session_token = _session_token(user, settings)
-    response = RedirectResponse(_admin_redirect_with_token(settings, session_token))
+    response = RedirectResponse(_admin_redirect_with_token(settings, session_token, return_to))
     _set_cookie(response, settings.admin_cookie_name, session_token, settings, max_age=settings.admin_session_hours * 3600)
     _clear_cookie(response, settings.admin_state_cookie_name, settings)
     return response
