@@ -72,9 +72,65 @@ def test_realtime_call_relays_sdp_without_returning_openai_key(monkeypatch, tmp_
     assert captured["files"]["sdp"][2] == "application/sdp"
     session_payload = json.loads(captured["files"]["session"][1])
     assert session_payload["model"] == "gpt-realtime-2"
-    assert session_payload["audio"]["output"]["voice"] == "marin"
+    assert session_payload["audio"]["output"]["voice"] == "cedar"
     assert {tool["name"] for tool in session_payload["tools"]} == {"search_gabriel_knowledge", "get_gabriel_dossier"}
     assert "sk-test-secret" not in answer
+
+
+def test_sideband_session_update_includes_required_session_type(tmp_path):
+    settings = make_settings(tmp_path)
+
+    event = realtime._sideband_session_update(settings, "stack")
+
+    assert event["type"] == "session.update"
+    assert event["session"]["type"] == "realtime"
+    assert event["session"]["tool_choice"] == "auto"
+    assert {tool["name"] for tool in event["session"]["tools"]} == {
+        "search_gabriel_knowledge",
+        "get_gabriel_dossier",
+    }
+
+
+def test_sideband_tool_output_does_not_force_duplicate_response(monkeypatch, tmp_path):
+    sent_events = []
+
+    class FakeWs:
+        def send(self, payload):
+            sent_events.append(json.loads(payload))
+
+    settings = make_settings(tmp_path)
+    context = realtime.RealtimeCallContext(
+        call_id="call-1",
+        session_id="session-1",
+        visitor_id="visitor-1",
+        active_context="stack",
+        started_at=0,
+    )
+    monkeypatch.setattr(
+        realtime,
+        "_execute_tool",
+        lambda *_args, **_kwargs: {"status": "ok", "retrieved_docs": 1, "sources": ["knowledge/skills/stack.md"]},
+    )
+    monkeypatch.setattr(realtime, "log_event", lambda *_args, **_kwargs: None)
+
+    realtime._handle_sideband_event(
+        FakeWs(),
+        settings,
+        context,
+        {
+            "type": "response.output_item.done",
+            "item": {
+                "type": "function_call",
+                "name": "search_gabriel_knowledge",
+                "call_id": "tool-call-1",
+                "arguments": json.dumps({"query": "stack"}),
+            },
+        },
+    )
+
+    assert [event["type"] for event in sent_events] == ["conversation.item.create"]
+    assert sent_events[0]["item"]["type"] == "function_call_output"
+    assert sent_events[0]["item"]["call_id"] == "tool-call-1"
 
 
 def test_realtime_call_respects_feature_flag(tmp_path):

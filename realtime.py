@@ -119,6 +119,18 @@ def _session_config(settings: Settings, active_context: Optional[str]) -> Dict[s
     }
 
 
+def _sideband_session_update(settings: Settings, active_context: Optional[str]) -> Dict[str, Any]:
+    return {
+        "type": "session.update",
+        "session": {
+            "type": "realtime",
+            "instructions": _realtime_instructions(settings, active_context),
+            "tools": _tool_schemas(),
+            "tool_choice": "auto",
+        },
+    }
+
+
 def _sanitize_openai_error(response: httpx.Response) -> str:
     try:
         body = response.json()
@@ -238,19 +250,7 @@ def _run_sideband(settings: Settings, context: RealtimeCallContext) -> None:
     ws = websocket.WebSocket()
     try:
         ws.connect(url, header=headers, timeout=REALTIME_CONNECT_TIMEOUT)
-        ws.send(
-            json.dumps(
-                {
-                    "type": "session.update",
-                    "session": {
-                        "instructions": _realtime_instructions(settings, context.active_context),
-                        "tools": _tool_schemas(),
-                        "tool_choice": "auto",
-                    },
-                },
-                ensure_ascii=False,
-            )
-        )
+        ws.send(json.dumps(_sideband_session_update(settings, context.active_context), ensure_ascii=False))
         deadline = time.time() + max(settings.realtime_max_session_seconds, 30)
         while time.time() < deadline:
             try:
@@ -341,7 +341,6 @@ def _handle_sideband_event(ws: Any, settings: Settings, context: RealtimeCallCon
             ensure_ascii=False,
         )
     )
-    ws.send(json.dumps({"type": "response.create"}, ensure_ascii=False))
 
 
 def _execute_tool(

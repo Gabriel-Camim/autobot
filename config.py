@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     openai_tts_voice: str = Field(default="alloy", alias="OPENAI_TTS_VOICE")
     realtime_enabled: bool = Field(default=False, alias="REALTIME_ENABLED")
     openai_realtime_model: str = Field(default="gpt-realtime-2", alias="OPENAI_REALTIME_MODEL")
-    openai_realtime_voice: str = Field(default="marin", alias="OPENAI_REALTIME_VOICE")
+    openai_realtime_voice: str = Field(default="cedar", alias="OPENAI_REALTIME_VOICE")
     realtime_max_session_seconds: int = Field(default=420, alias="REALTIME_MAX_SESSION_SECONDS")
     realtime_max_context_chars: int = Field(default=9000, alias="REALTIME_MAX_CONTEXT_CHARS")
     public_warmup_min_interval_seconds: int = Field(default=300, alias="PUBLIC_WARMUP_MIN_INTERVAL_SECONDS")
