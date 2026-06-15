@@ -672,6 +672,50 @@ def _source_summaries(docs_with_scores) -> List[SourceSummary]:
     return summaries[:4]
 
 
+def realtime_search_knowledge(
+    settings: Settings,
+    query: str,
+    active_context: Optional[str] = None,
+) -> Dict[str, Any]:
+    clean_query = (query or "").strip()
+    if not clean_query:
+        raise AppError("empty_realtime_query", "A busca em tempo real recebeu uma consulta vazia.", 400)
+    retrieval_query = _expand_retrieval_query(clean_query, active_context)
+    docs_with_scores = _retrieve_documents(settings, retrieval_query, active_context)
+    if len(docs_with_scores) < settings.rag_min_docs:
+        return {
+            "status": "weak_context",
+            "message": "Nao encontrei contexto documentado suficiente para responder com seguranca.",
+            "context": "",
+            "sources": [],
+        }
+    return {
+        "status": "ok",
+        "context": _format_context(docs_with_scores, settings.realtime_max_context_chars),
+        "sources": [source.__dict__ for source in _source_summaries(docs_with_scores)],
+        "retrieved_docs": len(docs_with_scores),
+    }
+
+
+def realtime_dossier_context(settings: Settings, section: Optional[str] = None) -> Dict[str, Any]:
+    allowed = {"gabriel", "trajetoria", "projetos", "stack", "experiencia", "mercado", "entrevista", "materiais"}
+    selected = (section or "gabriel").strip().lower()
+    if selected not in allowed:
+        selected = "gabriel"
+    report_path = settings.resolved_knowledge_dir / "reports" / f"{selected}.md"
+    if not report_path.exists():
+        return {
+            "status": "missing",
+            "section": selected,
+            "content": "Relatorio estatico nao encontrado para esta secao.",
+        }
+    return {
+        "status": "ok",
+        "section": selected,
+        "content": report_path.read_text(encoding="utf-8")[: settings.realtime_max_context_chars],
+    }
+
+
 def _usage_from_response(response: AIMessage) -> Dict[str, Any]:
     usage = getattr(response, "usage_metadata", None) or {}
     return {

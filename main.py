@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from admin import _current_admin, router as admin_router
@@ -20,6 +20,7 @@ from config import get_settings
 from events import event_storage_status, log_event
 from job_scans import create_job_scan, fail_job_scan, finish_job_scan, job_scan_storage_status
 from pgvector_store import pgvector_status, uses_pgvector
+from realtime import create_realtime_call
 from voice import synthesize_speech_base64, transcribe_upload
 from warmup import start_warmup, warmup_status
 
@@ -38,6 +39,7 @@ app.add_middleware(
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["X-Realtime-Call-Id"],
 )
 
 app.include_router(admin_router)
@@ -128,6 +130,12 @@ class TrackEventRequest(BaseModel):
     payload: Dict[str, Any] = Field(default_factory=dict)
 
 
+class PublicWarmupRequest(BaseModel):
+    visitor_id: Optional[str] = None
+    session_id: Optional[str] = None
+    reason: str = "page"
+
+
 PUBLIC_EVENT_KINDS = {
     "material_download",
     "report_open",
@@ -139,6 +147,8 @@ PUBLIC_EVENT_KINDS = {
     "evidence_open",
     "summary_copied",
 }
+
+_public_warmup_last: Dict[str, float] = {}
 
 
 def _writable_directory_status(directory: Path) -> Dict[str, Any]:
@@ -172,6 +182,21 @@ def _with_identity(payload: Dict[str, Any], visitor_identity: Optional[Dict[str,
     if not clean_identity:
         return payload
     return {**payload, "identity": clean_identity}
+
+
+def _public_warmup_key(payload: PublicWarmupRequest, request: Request) -> str:
+    if payload.visitor_id:
+        return payload.visitor_id
+    if request.client and request.client.host:
+        return request.client.host
+    return "anonymous"
+
+
+def _vector_index_ready() -> bool:
+    if uses_pgvector(settings):
+        return bool(pgvector_status(settings).get("ready"))
+    chroma_dir = settings.resolved_chroma_dir
+    return chroma_dir.exists() and any(chroma_dir.rglob("*"))
 
 
 def _chat_response_from_result(result: AgentResult) -> ChatResponse:
@@ -260,6 +285,9 @@ def health():
         "last_reindex_at": vector_status["last_reindex_at"],
         "vector_error": vector_status["error"],
         "warmup_status": warmup_status(),
+        "realtime_enabled": settings.realtime_enabled,
+        "realtime_model": settings.openai_realtime_model,
+        "realtime_voice": settings.openai_realtime_voice,
         "app_env": settings.app_env,
         "public_backend_url": settings.public_backend_url,
         "public_frontend_url": settings.public_frontend_url,
@@ -280,6 +308,64 @@ def health():
         "fast_chat_model": settings.openai_fast_chat_model,
         "embedding_model": settings.openai_embedding_model,
     }
+
+
+@app.post("/warmup/public")
+def public_warmup(payload: PublicWarmupRequest, request: Request):
+    key = _public_warmup_key(payload, request)
+    now = time.time()
+    min_interval = max(settings.public_warmup_min_interval_seconds, 30)
+    last = _public_warmup_last.get(key)
+    current_status = warmup_status()
+    if last and now - last < min_interval and current_status.get("state") in {"running", "success"}:
+        return {
+            "status": "skipped",
+            "warmed": current_status.get("state") == "success",
+            "took_ms": 0,
+            "vector_index_ready": _vector_index_ready(),
+            "warmup_status": current_status,
+        }
+
+    _public_warmup_last[key] = now
+    start = time.perf_counter()
+    status = start_warmup(settings, actor=f"public:{payload.reason[:40]}")
+    log_event(
+        settings,
+        "warmup_started",
+        request=request,
+        visitor_id=payload.visitor_id,
+        session_id=payload.session_id,
+        actor_type=_actor_type(request),
+        payload={"reason": payload.reason, "state": status.get("state")},
+    )
+    return {
+        "status": status.get("state", "running"),
+        "warmed": status.get("state") == "success",
+        "took_ms": round((time.perf_counter() - start) * 1000, 2),
+        "vector_index_ready": _vector_index_ready(),
+        "warmup_status": status,
+    }
+
+
+@app.post("/realtime/call")
+async def realtime_call(request: Request):
+    sdp_offer = (await request.body()).decode("utf-8", errors="ignore")
+    session_id = request.query_params.get("session_id")
+    visitor_id = request.query_params.get("visitor_id")
+    active_context = request.query_params.get("active_context")
+    start_warmup(settings, actor="realtime")
+    answer_sdp, call_id = create_realtime_call(
+        settings=settings,
+        sdp_offer=sdp_offer,
+        session_id=session_id,
+        visitor_id=visitor_id,
+        active_context=active_context,
+        request=request,
+    )
+    headers = {"Cache-Control": "no-store"}
+    if call_id:
+        headers["X-Realtime-Call-Id"] = call_id
+    return Response(content=answer_sdp, media_type="application/sdp", headers=headers)
 
 
 @app.post("/events/visit")
