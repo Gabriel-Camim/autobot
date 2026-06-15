@@ -1,13 +1,9 @@
-# Pacote recrutador - Extrair Gabriel
+# Currículo - Extrair Gabriel
 
-Este pacote reúne documentos públicos e curados para avaliação rápida de Gabriel Camim Santos.
+O botão Extrair Gabriel baixa diretamente o currículo em DOCX de Gabriel Camim Santos.
 
-Arquivos principais:
+Arquivo principal:
 
 - `Curriculo_Gabriel_Camim_Dados_IA_Automacao.docx`
-- `curriculo.md`
-- `perfil-tecnico.md`
-- `resumo-projetos.md`
-- `carta-motivacao.md`
 
-Nenhum segredo, chave de API, `.env`, cache ou índice local entra neste pacote.
+Nenhum segredo, chave de API, `.env`, cache ou índice local entra no download público.

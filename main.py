@@ -3,15 +3,13 @@ from __future__ import annotations
 import json
 import logging
 import time
-import zipfile
-from io import BytesIO
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field
 
 from admin import _current_admin, router as admin_router
@@ -762,26 +760,25 @@ def extract_gabriel():
     if not materials_dir.exists():
         raise AppError(
             code="materials_missing",
-            message="O pacote recrutador ainda não foi configurado.",
+            message="O currículo ainda não foi configurado.",
             status_code=404,
         )
 
-    files = [path for path in materials_dir.rglob("*") if path.is_file()]
-    if not files:
+    candidates = [
+        path
+        for path in materials_dir.rglob("*.docx")
+        if any(token in path.stem.lower() for token in ("curriculo", "currículo", "resume", "cv"))
+    ]
+    if not candidates:
         raise AppError(
-            code="materials_empty",
-            message="O pacote recrutador está vazio.",
+            code="curriculum_missing",
+            message="O currículo em DOCX ainda não foi configurado.",
             status_code=404,
         )
 
-    archive = BytesIO()
-    with zipfile.ZipFile(archive, mode="w", compression=zipfile.ZIP_DEFLATED) as zip_file:
-        for path in files:
-            zip_file.write(path, arcname=path.relative_to(materials_dir).as_posix())
-    archive.seek(0)
-
-    return StreamingResponse(
-        archive,
-        media_type="application/zip",
-        headers={"Content-Disposition": 'attachment; filename="extrair-gabriel.zip"'},
+    curriculum_path = sorted(candidates, key=lambda path: (len(path.name), path.name.lower()))[0]
+    return FileResponse(
+        curriculum_path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename="Curriculo_Gabriel_Camim.docx",
     )

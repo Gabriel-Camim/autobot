@@ -67,6 +67,9 @@ def test_realtime_call_relays_sdp_without_returning_openai_key(monkeypatch, tmp_
     assert call_id == "call_test123"
     assert captured["url"] == "https://api.openai.com/v1/realtime/calls"
     assert captured["headers"]["Authorization"] == "Bearer sk-test-secret"
+    assert captured["files"]["sdp"][0] is None
+    assert captured["files"]["sdp"][1].startswith("v=0")
+    assert captured["files"]["sdp"][2] == "application/sdp"
     session_payload = json.loads(captured["files"]["session"][1])
     assert session_payload["model"] == "gpt-realtime-2"
     assert session_payload["audio"]["output"]["voice"] == "marin"
@@ -106,4 +109,3 @@ def test_public_warmup_endpoint_starts_background_warmup(monkeypatch, tmp_path):
     body = response.json()
     assert body["status"] == "running"
     assert body["warmup_status"]["actor"] == "public:page"
-

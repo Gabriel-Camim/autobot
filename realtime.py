@@ -157,7 +157,7 @@ def create_realtime_call(
 
     session = _session_config(settings, active_context)
     files = {
-        "sdp": ("offer.sdp", sdp_offer, "application/sdp"),
+        "sdp": (None, sdp_offer, "application/sdp"),
         "session": (None, json.dumps(session, ensure_ascii=False), "application/json"),
     }
     headers = {"Authorization": f"Bearer {settings.openai_api_key}"}
@@ -359,4 +359,3 @@ def _execute_tool(
     if name == "get_gabriel_dossier":
         return realtime_dossier_context(settings, section=str(arguments.get("section") or active_context or "gabriel"))
     return {"status": "unknown_tool", "message": f"Ferramenta desconhecida: {name}"}
-
