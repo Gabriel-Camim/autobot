@@ -47,6 +47,17 @@ class AgentResult:
 
 
 @dataclass
+class FitAnalysisResult:
+    session_id: str
+    answer: str
+    summary: str
+    fit_score: Optional[int]
+    analysis: Dict[str, Any]
+    sources: List[SourceSummary]
+    usage: Dict[str, Any]
+
+
+@dataclass
 class PreparedAgentRun:
     session_id: str
     clean_message: str
@@ -661,6 +672,50 @@ def _source_summaries(docs_with_scores) -> List[SourceSummary]:
     return summaries[:4]
 
 
+def realtime_search_knowledge(
+    settings: Settings,
+    query: str,
+    active_context: Optional[str] = None,
+) -> Dict[str, Any]:
+    clean_query = (query or "").strip()
+    if not clean_query:
+        raise AppError("empty_realtime_query", "A busca em tempo real recebeu uma consulta vazia.", 400)
+    retrieval_query = _expand_retrieval_query(clean_query, active_context)
+    docs_with_scores = _retrieve_documents(settings, retrieval_query, active_context)
+    if len(docs_with_scores) < settings.rag_min_docs:
+        return {
+            "status": "weak_context",
+            "message": "Nao encontrei contexto documentado suficiente para responder com seguranca.",
+            "context": "",
+            "sources": [],
+        }
+    return {
+        "status": "ok",
+        "context": _format_context(docs_with_scores, settings.realtime_max_context_chars),
+        "sources": [source.__dict__ for source in _source_summaries(docs_with_scores)],
+        "retrieved_docs": len(docs_with_scores),
+    }
+
+
+def realtime_dossier_context(settings: Settings, section: Optional[str] = None) -> Dict[str, Any]:
+    allowed = {"gabriel", "trajetoria", "projetos", "stack", "experiencia", "mercado", "entrevista", "materiais"}
+    selected = (section or "gabriel").strip().lower()
+    if selected not in allowed:
+        selected = "gabriel"
+    report_path = settings.resolved_knowledge_dir / "reports" / f"{selected}.md"
+    if not report_path.exists():
+        return {
+            "status": "missing",
+            "section": selected,
+            "content": "Relatorio estatico nao encontrado para esta secao.",
+        }
+    return {
+        "status": "ok",
+        "section": selected,
+        "content": report_path.read_text(encoding="utf-8")[: settings.realtime_max_context_chars],
+    }
+
+
 def _usage_from_response(response: AIMessage) -> Dict[str, Any]:
     usage = getattr(response, "usage_metadata", None) or {}
     return {
@@ -692,6 +747,275 @@ Grounding guardrails:
 User question:
 {clean_message}
 """.strip()
+
+
+FIT_SYSTEM_PROMPT = """
+You are Gabriel's Interview OS for recruiters.
+
+Goal:
+- Analyze the pasted job description against Gabriel's documented knowledge base.
+- Help the recruiter understand fit quickly, honestly, and with evidence.
+
+Rules:
+- Answer in Portuguese unless the job description is clearly in English.
+- Speak about Gabriel in first person when describing fit, as if Gabriel is explaining himself.
+- Use only the retrieved Markdown context as factual basis about Gabriel.
+- Do not invent skills, years of experience, employers, certifications, tools, metrics, or project facts.
+- If a requirement is not documented, mark it as a gap or "não documentado".
+- Do not use Markdown bold or italic markers.
+- Keep the analysis structured and practical.
+
+Output format:
+Fit estimado: NN/100
+
+Resumo executivo:
+One short paragraph.
+
+Aderências fortes:
+- Bullet list.
+
+Lacunas honestas:
+- Bullet list.
+
+Projetos que provam fit:
+- Bullet list connecting requirements to documented projects.
+
+Perguntas sugeridas:
+- Bullet list of useful interview questions.
+
+Resumo copiável:
+One compact paragraph a recruiter could share internally.
+""".strip()
+
+
+def _job_fit_query(job_title: str, company: str, job_description: str) -> str:
+    return "\n".join(
+        part
+        for part in [
+            f"Vaga: {job_title.strip()}" if job_title.strip() else "",
+            f"Empresa: {company.strip()}" if company.strip() else "",
+            job_description.strip(),
+            "Termos de busca derivados: stack, hard skills, projetos, experiência, IA, dados, automação, backend, produto, limitações técnicas, lacunas, fit de vaga",
+        ]
+        if part
+    )
+
+
+def _build_fit_prompt(context: str, job_title: str, company: str, job_description: str) -> str:
+    trimmed_description = job_description.strip()[:18000]
+    return f"""
+Retrieved Markdown context about Gabriel:
+{context}
+
+Job title:
+{job_title or "não informado"}
+
+Company:
+{company or "não informada"}
+
+Job description:
+{trimmed_description}
+
+Analysis instructions:
+- Cross the job requirements against the retrieved context.
+- Separate what is strongly documented from what is weak, missing, or not documented.
+- Mention concrete projects only when present in the context.
+- For the fit score, estimate from 0 to 100 based only on documented evidence.
+""".strip()
+
+
+def _extract_fit_score(answer: str) -> Optional[int]:
+    match = re.search(r"fit\s+estimado\s*:\s*(\d{1,3})\s*/\s*100", answer, flags=re.IGNORECASE)
+    if not match:
+        return None
+    return max(0, min(100, int(match.group(1))))
+
+
+def _extract_section(answer: str, title: str) -> str:
+    pattern = re.compile(
+        rf"{re.escape(title)}\s*:\s*(.*?)(?=\n[A-ZÁÉÍÓÚÂÊÔÃÕÇ][^\n:]+:\s*|\Z)",
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    match = pattern.search(answer)
+    return match.group(1).strip() if match else ""
+
+
+def _first_paragraph(text: str) -> str:
+    for block in re.split(r"\n\s*\n", text.strip()):
+        clean = block.strip()
+        if clean:
+            return clean[:1200]
+    return ""
+
+
+def _fit_analysis_map(answer: str) -> Dict[str, Any]:
+    return {
+        "fit_score": _extract_fit_score(answer),
+        "executive_summary": _first_paragraph(_extract_section(answer, "Resumo executivo")),
+        "strong_matches": _extract_section(answer, "Aderências fortes"),
+        "honest_gaps": _extract_section(answer, "Lacunas honestas"),
+        "proof_projects": _extract_section(answer, "Projetos que provam fit"),
+        "suggested_questions": _extract_section(answer, "Perguntas sugeridas"),
+        "shareable_summary": _first_paragraph(_extract_section(answer, "Resumo copiável")),
+    }
+
+
+def stream_fit_analysis(
+    *,
+    job_title: str,
+    company: str,
+    job_description: str,
+    session_id: Optional[str] = None,
+    settings: Optional[Settings] = None,
+) -> Iterator[Dict[str, Any]]:
+    settings = settings or get_settings()
+    total_start = time.perf_counter()
+    session_id = session_id or str(uuid4())
+    clean_description = job_description.strip()
+    if len(clean_description) < 80:
+        raise AppError("job_description_too_short", "Cole uma descrição de vaga mais completa para eu analisar o fit.", 400)
+
+    yield _stage("received", "Vaga recebida", "complete", elapsed_ms=0)
+
+    yield _stage("retrieving_context", "Cruzando vaga com a base", "active")
+    retrieval_start = time.perf_counter()
+    retrieval_query = _job_fit_query(job_title, company, clean_description)
+    try:
+        docs_with_scores = _retrieve_documents(settings, retrieval_query, None)
+    except AppError:
+        raise
+    except Exception as exc:
+        logger.exception("fit_rag_retrieval_failed")
+        raise AppError(
+            code="rag_unavailable",
+            message="Não consegui consultar a base de conhecimento agora. Tente novamente em instantes.",
+            status_code=503,
+        ) from exc
+    retrieval_ms = round((time.perf_counter() - retrieval_start) * 1000, 2)
+    yield _stage("retrieving_context", "Cruzando vaga com a base", "complete", elapsed_ms=retrieval_ms, docs=len(docs_with_scores))
+
+    if len(docs_with_scores) < settings.rag_min_docs:
+        raise AppError(
+            code="rag_weak_context",
+            message="Não encontrei contexto suficiente nos Markdown para analisar essa vaga com segurança.",
+            status_code=422,
+        )
+
+    yield _stage("selecting_evidence", "Selecionando evidências", "active")
+    evidence_start = time.perf_counter()
+    context = _format_context(docs_with_scores, settings.rag_max_context_chars)
+    prompt = _build_fit_prompt(context, job_title.strip(), company.strip(), clean_description)
+    messages: List[BaseMessage] = [
+        SystemMessage(content=f"{load_system_prompt(settings)}\n\n{FIT_SYSTEM_PROMPT}"),
+        HumanMessage(content=prompt),
+    ]
+    yield _stage("selecting_evidence", "Selecionando evidências", "complete", elapsed_ms=round((time.perf_counter() - evidence_start) * 1000, 2))
+
+    yield _stage("generating_answer", "Gerando análise de fit", "active", model=settings.openai_chat_model)
+    llm_start = time.perf_counter()
+    first_token_ms: Optional[float] = None
+    answer = ""
+    raw_stream_text = ""
+    sanitizer_state: Dict[str, bool] = {"pending_star": False}
+    usage: Dict[str, Any] = {}
+    model_used = settings.openai_chat_model
+    fallback_used = False
+
+    try:
+        for chunk in _build_llm(settings, model_used).stream(messages):
+            chunk_usage = getattr(chunk, "usage_metadata", None) or {}
+            if chunk_usage:
+                usage = {
+                    "input_tokens": int(chunk_usage.get("input_tokens", 0) or 0),
+                    "output_tokens": int(chunk_usage.get("output_tokens", 0) or 0),
+                    "total_tokens": int(chunk_usage.get("total_tokens", 0) or 0),
+                }
+            chunk_text = _response_content_to_delta(getattr(chunk, "content", ""))
+            if not chunk_text:
+                continue
+            if raw_stream_text and len(raw_stream_text) >= 12 and chunk_text.startswith(raw_stream_text):
+                delta = chunk_text[len(raw_stream_text) :]
+                raw_stream_text = chunk_text
+            else:
+                delta = chunk_text
+                raw_stream_text += chunk_text
+            delta = _sanitize_stream_delta(delta, sanitizer_state)
+            if not delta:
+                continue
+            if first_token_ms is None:
+                first_token_ms = round((time.perf_counter() - llm_start) * 1000, 2)
+            answer += delta
+            yield {"event": "delta", "data": {"text": delta}}
+    except Exception as exc:
+        logger.exception("fit_llm_stream_failed")
+        if answer or not settings.openai_fast_chat_model or settings.openai_fast_chat_model == settings.openai_chat_model:
+            raise AppError(
+                code="llm_unavailable",
+                message="Não consegui gerar a análise com a OpenAI agora. Verifique créditos, chave e limite de uso.",
+                status_code=503,
+            ) from exc
+        fallback_used = True
+        model_used = settings.openai_fast_chat_model
+        yield _stage("generating_answer", "Gerando análise de fit", "active", detail="Usando modelo rápido de fallback", model=model_used)
+        try:
+            response = _build_llm(settings, model_used).invoke(messages)
+        except Exception as fallback_exc:
+            logger.exception("fit_llm_fallback_failed")
+            raise AppError(
+                code="llm_unavailable",
+                message="Não consegui gerar a análise com a OpenAI agora. Verifique créditos, chave e limite de uso.",
+                status_code=503,
+            ) from fallback_exc
+        answer = sanitize_answer_text(_response_content_to_text(response.content))
+        usage = _usage_from_response(response)
+        if answer:
+            first_token_ms = first_token_ms or round((time.perf_counter() - llm_start) * 1000, 2)
+            yield {"event": "delta", "data": {"text": answer}}
+
+    tail = _flush_stream_sanitizer(sanitizer_state)
+    if tail:
+        answer += tail
+        yield {"event": "delta", "data": {"text": tail}}
+
+    llm_ms = round((time.perf_counter() - llm_start) * 1000, 2)
+    yield _stage("generating_answer", "Gerando análise de fit", "complete", elapsed_ms=llm_ms, model=model_used)
+
+    answer = sanitize_answer_text(answer)
+    if not answer:
+        raise AppError("empty_llm_response", "A OpenAI retornou uma análise vazia. Tente novamente em instantes.", 503)
+
+    analysis = _fit_analysis_map(answer)
+    fit_score = analysis.get("fit_score")
+    summary = analysis.get("shareable_summary") or analysis.get("executive_summary") or answer[:1000]
+    usage.update(
+        {
+            "model": model_used,
+            "fallback_used": fallback_used,
+            "retrieval_ms": retrieval_ms,
+            "llm_ms": llm_ms,
+            "time_to_first_token_ms": first_token_ms,
+            "total_ms": round((time.perf_counter() - total_start) * 1000, 2),
+            "retrieved_docs": len(docs_with_scores),
+            "retrieved_sources": [
+                str((doc.metadata or {}).get("source", ""))
+                for doc, _score in docs_with_scores
+                if (doc.metadata or {}).get("source")
+            ],
+        }
+    )
+    _get_store(settings).append(session_id, f"Análise de vaga: {job_title or 'vaga sem título'}", answer)
+    yield {
+        "event": "done",
+        "result": FitAnalysisResult(
+            session_id=session_id,
+            answer=answer,
+            summary=summary,
+            fit_score=fit_score,
+            analysis=analysis,
+            sources=_source_summaries(docs_with_scores),
+            usage=usage,
+        ),
+    }
 
 
 def _prepare_agent_run(

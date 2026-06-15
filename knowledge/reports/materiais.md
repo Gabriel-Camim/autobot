@@ -12,6 +12,6 @@ summary: Relatório estático do nó materiais.
 
 # Materiais
 
-O botão Extrair Gabriel baixa o pacote recrutador com documentos curados para avaliação rápida: currículo, perfil técnico, carta de motivação e resumo de projetos.
+O botão Extrair Gabriel baixa diretamente o currículo em DOCX de Gabriel Camim Santos, sem arquivo `.zip`.
 
-O conteúdo é público e preparado para recrutadores. Chaves de API, `.env`, Chroma local, caches e arquivos temporários não entram no pacote.
+O conteúdo é público e preparado para recrutadores. Chaves de API, `.env`, Chroma local, caches e arquivos temporários não entram no download.

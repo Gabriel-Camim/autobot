@@ -13,3 +13,4 @@ chromadb>=1.5,<2
 pytest>=8.3,<9
 httpx>=0.28,<1
 psycopg[binary]>=3.2,<4
+websocket-client>=1.8,<2
