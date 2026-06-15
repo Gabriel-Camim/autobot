@@ -14,7 +14,7 @@ summary: Relatório estático do nó stack.
 
 Minha stack combina IA generativa, dados, automação, backend e produto.
 
-Em IA e LLMs, trabalho com OpenAI, Claude, LangChain, engenharia de prompts, agentes, structured outputs, tool calling, RAG, memória, guardrails e avaliação de respostas.
+Em IA e LLMs, trabalho com OpenAI, Claude, LangChain, engenharia de prompts, agentes, structured outputs, tool calling, RAG, embeddings, memória, guardrails e avaliação de respostas.
 
 Em dados, uso SQL, PostgreSQL, Pgvector, ChromaDB, modelagem relacional, schemas, KPIs, forecast, governança, lineage, documentação de métricas, Power BI e Superset.
 
