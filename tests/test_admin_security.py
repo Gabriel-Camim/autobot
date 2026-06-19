@@ -3,7 +3,15 @@ from pathlib import Path
 import pytest
 from starlette.requests import Request
 
-from admin import _admin_redirect_with_token, _current_admin, _github_oauth_token_error, _read_session_token, _resolve_content_path, _session_token
+from admin import (
+    _admin_redirect_with_token,
+    _current_admin,
+    _github_oauth_token_error,
+    _read_session_token,
+    _reindex_diagnostics,
+    _resolve_content_path,
+    _session_token,
+)
 from agent import AppError, FALLBACK_SYSTEM_PROMPT, load_system_prompt
 from config import Settings
 
@@ -89,3 +97,37 @@ def test_github_oauth_token_error_includes_provider_reason():
 
     assert "incorrect_client_credentials" in message
     assert "client_secret" in message
+
+
+def test_reindex_diagnostics_reports_sample_retrieval(monkeypatch, tmp_path: Path):
+    from langchain_core.documents import Document
+
+    settings = make_settings(tmp_path)
+    doc = Document(
+        page_content="Gabriel usa Python, FastAPI, LangChain e pgvector.",
+        metadata={"source": "skills/stack.md", "title": "Stack", "summary": "Stack técnica."},
+    )
+
+    monkeypatch.setattr("admin.uses_pgvector", lambda _settings: True)
+    monkeypatch.setattr(
+        "admin.pgvector_status",
+        lambda _settings: {
+            "backend": "pgvector",
+            "ready": True,
+            "chunks": 12,
+            "last_reindex_at": "2026-06-19 10:00:00+00",
+            "error": None,
+        },
+    )
+    monkeypatch.setattr(
+        "admin.realtime_search_knowledge",
+        lambda _settings, _query: {"sources": [{"source": "skills/stack.md"}]},
+    )
+
+    diagnostics = _reindex_diagnostics(settings, [doc])
+
+    assert diagnostics["vector_backend"] == "pgvector"
+    assert diagnostics["vector_ready"] is True
+    assert diagnostics["vector_chunks"] == 12
+    assert diagnostics["sample_ok"] is True
+    assert diagnostics["sample_sources"] == ["skills/stack.md"]

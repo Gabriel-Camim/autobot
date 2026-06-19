@@ -17,11 +17,12 @@ from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from agent import AppError
+from agent import AppError, realtime_search_knowledge
 from config import Settings, get_settings
 from events import event_summary, list_events, log_event
 from ingest import ingest, load_public_documents
 from job_scans import delete_job_scan, get_job_scan, list_job_scans
+from pgvector_store import pgvector_status, uses_pgvector
 from warmup import start_warmup, warmup_status
 
 
@@ -39,6 +40,15 @@ _reindex_status: Dict[str, Any] = {
     "duration_ms": None,
     "document_count": 0,
     "chunk_count": 0,
+    "vector_backend": None,
+    "vector_ready": None,
+    "vector_chunks": None,
+    "last_reindex_at": None,
+    "sample_query": None,
+    "sample_sources": [],
+    "sample_ok": None,
+    "sample_error": None,
+    "github_branch": None,
     "error": None,
 }
 
@@ -112,6 +122,15 @@ class ReindexStatusResponse(BaseModel):
     duration_ms: Optional[int] = None
     document_count: int = 0
     chunk_count: int = 0
+    vector_backend: Optional[str] = None
+    vector_ready: Optional[bool] = None
+    vector_chunks: Optional[int] = None
+    last_reindex_at: Optional[str] = None
+    sample_query: Optional[str] = None
+    sample_sources: List[str] = Field(default_factory=list)
+    sample_ok: Optional[bool] = None
+    sample_error: Optional[str] = None
+    github_branch: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -622,16 +641,69 @@ def _set_reindex_status(**values: Any) -> None:
     _reindex_status.update(values)
 
 
+def _document_sample_query(docs: List[Any]) -> tuple[Optional[str], Optional[str]]:
+    for doc in docs:
+        metadata = doc.metadata or {}
+        source = str(metadata.get("source") or "")
+        title = str(metadata.get("title") or "")
+        summary = str(metadata.get("summary") or "")
+        body = " ".join((doc.page_content or "").split())[:360]
+        query = " ".join(part for part in (title, summary, body) if part).strip()
+        if source and query:
+            return query[:700], source
+    return None, None
+
+
+def _reindex_diagnostics(settings: Settings, docs: List[Any]) -> Dict[str, Any]:
+    vector_status = (
+        pgvector_status(settings)
+        if uses_pgvector(settings)
+        else {"backend": "chroma", "ready": True, "chunks": None, "last_reindex_at": None, "error": None}
+    )
+    sample_query, expected_source = _document_sample_query(docs)
+    diagnostics: Dict[str, Any] = {
+        "vector_backend": vector_status.get("backend"),
+        "vector_ready": vector_status.get("ready"),
+        "vector_chunks": vector_status.get("chunks"),
+        "last_reindex_at": vector_status.get("last_reindex_at"),
+        "sample_query": sample_query,
+        "sample_sources": [],
+        "sample_ok": None,
+        "sample_error": vector_status.get("error"),
+        "github_branch": settings.github_branch,
+    }
+    if not sample_query:
+        diagnostics["sample_error"] = "Nenhum documento público disponível para consulta sintética."
+        return diagnostics
+    try:
+        result = realtime_search_knowledge(settings, sample_query)
+        sources = [
+            str(source.get("source") or "")
+            for source in result.get("sources", [])
+            if isinstance(source, dict) and source.get("source")
+        ]
+        diagnostics["sample_sources"] = sources
+        diagnostics["sample_ok"] = bool(expected_source and expected_source in sources)
+        if not diagnostics["sample_ok"]:
+            diagnostics["sample_error"] = f"Consulta sintética não recuperou a fonte esperada: {expected_source}"
+    except Exception as exc:
+        diagnostics["sample_error"] = _sanitize_error(exc)
+        diagnostics["sample_ok"] = False
+    return diagnostics
+
+
 def _run_reindex(settings: Settings, actor: Optional[str] = None) -> None:
     try:
         docs = load_public_documents(settings)
         chunks = ingest(settings)
+        diagnostics = _reindex_diagnostics(settings, docs)
         _set_reindex_status(
             state="success",
             finished_at=time.time(),
             duration_ms=int((time.time() - (_reindex_status.get("started_at") or time.time())) * 1000),
             document_count=len(docs),
             chunk_count=chunks,
+            **diagnostics,
             error=None,
         )
         log_event(
@@ -639,7 +711,7 @@ def _run_reindex(settings: Settings, actor: Optional[str] = None) -> None:
             "admin_reindex_success",
             session_id=actor,
             actor_type="admin",
-            payload={"document_count": len(docs), "chunk_count": chunks},
+            payload={"document_count": len(docs), "chunk_count": chunks, **diagnostics},
         )
     except Exception as exc:
         sanitized = _sanitize_error(exc)
@@ -667,6 +739,15 @@ def reindex_admin(request: Request):
         duration_ms=None,
         document_count=0,
         chunk_count=0,
+        vector_backend=settings.vector_backend,
+        vector_ready=None,
+        vector_chunks=None,
+        last_reindex_at=None,
+        sample_query=None,
+        sample_sources=[],
+        sample_ok=None,
+        sample_error=None,
+        github_branch=settings.github_branch,
         error=None,
     )
     log_event(settings, "admin_reindex_start", request=request, session_id=user.login, actor_type="admin")
