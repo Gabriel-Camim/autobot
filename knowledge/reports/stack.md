@@ -18,6 +18,6 @@ Em IA e LLMs, trabalho com OpenAI, Claude, LangChain, engenharia de prompts, age
 
 Em dados, uso SQL, PostgreSQL, Pgvector, ChromaDB, modelagem relacional, schemas, KPIs, forecast, governança, lineage, documentação de métricas, Power BI e Superset.
 
-Em automação, uso n8n, APIs REST, webhooks, JSON, OpenAI API, Gamma API, parsing, tratamento de erros e pipelines de dados textuais.
+Em automação, uso n8n, APIs REST, webhooks, JSON, OpenAI API, Claude API, Gamma API, parsing, tratamento de erros e pipelines de dados textuais.
 
-Em desenvolvimento, uso JavaScript, React, Vite, Python, HTML/CSS, GitHub, VS Code, Vercel, Docker, FastAPI, React, backend, APIs internas, autenticação, permissões, CI/CD e banco multitenant.
+Em desenvolvimento, uso JavaScript, React, Vite, Python, HTML/CSS, GitHub, VS Code, Vercel, Docker, FastAPI, backend, APIs internas, OAuth, permissões, CI/CD e banco multitenant.
