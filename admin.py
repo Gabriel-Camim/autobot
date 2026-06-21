@@ -24,6 +24,16 @@ from ingest import ingest, load_public_documents
 from job_scans import delete_job_scan, get_job_scan, list_job_scans
 from pgvector_store import pgvector_status, uses_pgvector
 from rag_lab import coverage_summary, last_eval_run, run_rag_eval
+from rag_quality import (
+    eval_case_from_suggestion,
+    get_knowledge_suggestion,
+    get_rag_trace,
+    list_knowledge_suggestions,
+    list_rag_feedback,
+    list_rag_traces,
+    triage_rag_feedback,
+    update_knowledge_suggestion_status,
+)
 from warmup import start_warmup, warmup_status
 
 
@@ -141,6 +151,17 @@ class RagProbeRequest(BaseModel):
     question: str
     active_context: Optional[str] = None
     limit: int = Field(default=8, ge=1, le=20)
+
+
+class RagFeedbackTriageRequest(BaseModel):
+    status: str = Field(default="triaged")
+    notes: Optional[str] = None
+    action: Optional[str] = None
+
+
+class SuggestionActionRequest(BaseModel):
+    message: Optional[str] = None
+    status: Optional[str] = None
 
 
 TreeNode.model_rebuild()
@@ -398,6 +419,25 @@ def _github_existing_sha(settings: Settings, repo_path: str) -> Optional[str]:
         raise AppError("github_read_failed", f"GitHub recusou leitura de {repo_path}: {response.status_code}", 502)
     data = response.json()
     return data.get("sha")
+
+
+def _github_read_text(settings: Settings, repo_path: str) -> Optional[str]:
+    _require_github(settings)
+    with httpx.Client(timeout=20) as client:
+        response = client.get(
+            _github_content_url(settings, repo_path),
+            headers=_github_headers(settings),
+            params={"ref": settings.github_branch},
+        )
+    if response.status_code == 404:
+        return None
+    if response.status_code >= 400:
+        raise AppError("github_read_failed", f"GitHub recusou leitura de {repo_path}: {response.status_code}", 502)
+    data = response.json()
+    content = data.get("content") or ""
+    if data.get("encoding") == "base64":
+        return base64.b64decode(content).decode("utf-8")
+    return str(content)
 
 
 def _github_put(settings: Settings, repo_path: str, content: str, message: str) -> CommitResponse:
@@ -840,6 +880,136 @@ def admin_rag_eval_last(request: Request):
     settings = _settings()
     _require_admin(request, settings)
     return {"run": last_eval_run(settings), "coverage": coverage_summary(settings)}
+
+
+@router.get("/rag/traces")
+def admin_rag_traces(
+    request: Request,
+    visitor_id: Optional[str] = Query(default=None),
+    session_id: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    settings = _settings()
+    _require_admin(request, settings)
+    return {"traces": list_rag_traces(settings, visitor_id=visitor_id, session_id=session_id, limit=limit)}
+
+
+@router.get("/rag/traces/{trace_id}")
+def admin_rag_trace_detail(trace_id: str, request: Request):
+    settings = _settings()
+    _require_admin(request, settings)
+    trace = get_rag_trace(settings, trace_id)
+    if not trace:
+        raise AppError("rag_trace_not_found", "Trace RAG não encontrado.", 404)
+    return trace
+
+
+@router.get("/rag/feedback")
+def admin_rag_feedback(
+    request: Request,
+    status: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    settings = _settings()
+    _require_admin(request, settings)
+    return {"feedback": list_rag_feedback(settings, status=status, limit=limit)}
+
+
+@router.post("/rag/feedback/{feedback_id}/triage")
+def admin_rag_feedback_triage(feedback_id: str, payload: RagFeedbackTriageRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    feedback = triage_rag_feedback(
+        settings,
+        feedback_id,
+        payload.status.strip() or "triaged",
+        {"notes": payload.notes, "action": payload.action, "admin": user.login},
+    )
+    if not feedback:
+        raise AppError("rag_feedback_not_found", "Feedback RAG não encontrado.", 404)
+    log_event(settings, "admin_rag_feedback_triage", request=request, session_id=user.login, actor_type="admin", payload={"feedback_id": feedback_id, "status": payload.status})
+    return feedback
+
+
+@router.get("/knowledge/suggestions")
+def admin_knowledge_suggestions(
+    request: Request,
+    status: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    settings = _settings()
+    _require_admin(request, settings)
+    return {"suggestions": list_knowledge_suggestions(settings, status=status, limit=limit)}
+
+
+@router.get("/knowledge/suggestions/{suggestion_id}")
+def admin_knowledge_suggestion_detail(suggestion_id: str, request: Request):
+    settings = _settings()
+    _require_admin(request, settings)
+    suggestion = get_knowledge_suggestion(settings, suggestion_id)
+    if not suggestion:
+        raise AppError("knowledge_suggestion_not_found", "Sugestão não encontrada.", 404)
+    return suggestion
+
+
+@router.post("/knowledge/suggestions/{suggestion_id}/accept")
+def admin_knowledge_suggestion_accept(suggestion_id: str, payload: SuggestionActionRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    suggestion = update_knowledge_suggestion_status(settings, suggestion_id, payload.status or "accepted", {"accepted_by": user.login, "message": payload.message})
+    if not suggestion:
+        raise AppError("knowledge_suggestion_not_found", "Sugestão não encontrada.", 404)
+    log_event(settings, "admin_knowledge_suggestion_accept", request=request, session_id=user.login, actor_type="admin", payload={"suggestion_id": suggestion_id})
+    return suggestion
+
+
+@router.post("/knowledge/suggestions/{suggestion_id}/ignore")
+def admin_knowledge_suggestion_ignore(suggestion_id: str, payload: SuggestionActionRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    suggestion = update_knowledge_suggestion_status(settings, suggestion_id, payload.status or "ignored", {"ignored_by": user.login, "message": payload.message})
+    if not suggestion:
+        raise AppError("knowledge_suggestion_not_found", "Sugestão não encontrada.", 404)
+    log_event(settings, "admin_knowledge_suggestion_ignore", request=request, session_id=user.login, actor_type="admin", payload={"suggestion_id": suggestion_id})
+    return suggestion
+
+
+@router.post("/knowledge/suggestions/{suggestion_id}/create-markdown")
+def admin_knowledge_suggestion_create_markdown(suggestion_id: str, payload: SuggestionActionRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    suggestion = get_knowledge_suggestion(settings, suggestion_id)
+    if not suggestion:
+        raise AppError("knowledge_suggestion_not_found", "Sugestão não encontrada.", 404)
+    repo_path, _target = _resolve_content_path(suggestion["suggested_path"], settings, require_markdown=True)
+    commit = _github_put(settings, repo_path, suggestion["draft_markdown"], payload.message or f"admin: create suggested knowledge {repo_path}")
+    update_knowledge_suggestion_status(settings, suggestion_id, "converted_to_markdown", {"commit_sha": commit.commit_sha, "path": repo_path, "converted_by": user.login})
+    log_event(settings, "admin_knowledge_suggestion_markdown", request=request, session_id=user.login, actor_type="admin", payload={"suggestion_id": suggestion_id, "path": repo_path, "commit_sha": commit.commit_sha})
+    return commit
+
+
+@router.post("/knowledge/suggestions/{suggestion_id}/create-eval-case")
+def admin_knowledge_suggestion_create_eval_case(suggestion_id: str, payload: SuggestionActionRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    suggestion = get_knowledge_suggestion(settings, suggestion_id)
+    if not suggestion:
+        raise AppError("knowledge_suggestion_not_found", "Sugestão não encontrada.", 404)
+    repo_path = "evals/rag_cases.json"
+    current_raw = _github_read_text(settings, repo_path)
+    cases = json.loads(current_raw) if current_raw else []
+    if not isinstance(cases, list):
+        raise AppError("invalid_eval_cases", "evals/rag_cases.json precisa conter uma lista JSON.", 422)
+    case = eval_case_from_suggestion(suggestion)
+    existing_ids = {str(item.get("id")) for item in cases if isinstance(item, dict)}
+    if case["id"] in existing_ids:
+        case["id"] = f"{case['id']}-{len(existing_ids) + 1}"
+    cases.append(case)
+    content = json.dumps(cases, ensure_ascii=False, indent=2) + "\n"
+    commit = _github_put(settings, repo_path, content, payload.message or f"admin: add RAG eval case {case['id']}")
+    update_knowledge_suggestion_status(settings, suggestion_id, "converted_to_eval", {"commit_sha": commit.commit_sha, "eval_case": case, "converted_by": user.login})
+    log_event(settings, "admin_knowledge_suggestion_eval_case", request=request, session_id=user.login, actor_type="admin", payload={"suggestion_id": suggestion_id, "case_id": case["id"], "commit_sha": commit.commit_sha})
+    return {"ok": True, "case": case, "commit": commit}
 
 
 @router.get("/events/summary")

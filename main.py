@@ -18,6 +18,11 @@ from config import get_settings
 from events import event_storage_status, log_event
 from job_scans import create_job_scan, fail_job_scan, finish_job_scan, job_scan_storage_status
 from pgvector_store import pgvector_status, uses_pgvector
+from rag_quality import (
+    create_rag_feedback,
+    rag_quality_storage_status,
+    update_rag_trace_actor,
+)
 from realtime import create_realtime_call
 from voice import synthesize_speech_base64, transcribe_upload
 from warmup import start_warmup, warmup_status
@@ -93,6 +98,7 @@ class ChatResponse(BaseModel):
     sources_summary: List[SourceSummaryResponse]
     evidence: List[EvidenceResponse] = Field(default_factory=list)
     usage: dict
+    trace_id: Optional[str] = None
 
 
 class TranscriptionResponse(BaseModel):
@@ -147,6 +153,17 @@ class PublicWarmupRequest(BaseModel):
     visitor_id: Optional[str] = None
     session_id: Optional[str] = None
     reason: str = "page"
+
+
+class RagFeedbackRequest(BaseModel):
+    trace_id: Optional[str] = None
+    session_id: Optional[str] = None
+    visitor_id: Optional[str] = None
+    visitor_identity: Optional[Dict[str, Any]] = None
+    rating: str
+    reason: Optional[str] = None
+    comment: Optional[str] = None
+    expected_answer: Optional[str] = None
 
 
 PUBLIC_EVENT_KINDS = {
@@ -222,6 +239,7 @@ def _chat_response_from_result(result: AgentResult) -> ChatResponse:
         sources_summary=sources,
         evidence=evidence,
         usage=result.usage,
+        trace_id=result.trace_id or result.usage.get("trace_id"),
     )
 
 
@@ -308,7 +326,18 @@ def health():
         "public_frontend_url": settings.public_frontend_url,
         "github_branch": settings.github_branch,
         "rag_lab_available": True,
-        "admin_features": ["markdown", "prompt", "events", "jobs", "rag_lab", "rag_evals", "rag_probe"],
+        "admin_features": [
+            "markdown",
+            "prompt",
+            "events",
+            "jobs",
+            "rag_lab",
+            "rag_evals",
+            "rag_probe",
+            "rag_quality",
+            "rag_feedback",
+            "knowledge_suggestions",
+        ],
         "cors_local_enabled": settings.allow_local_cors,
         "frontend_origins": settings.frontend_origin_list,
         "local_origin_regex": settings.local_frontend_origin_regex if settings.allow_local_cors else "",
@@ -320,6 +349,11 @@ def health():
         "materials_dir_safe": materials_dir.exists() and settings.backend_dir.resolve() in materials_dir.resolve().parents,
         "events": event_storage_status(settings),
         "job_scans": job_scan_storage_status(settings),
+        "rag_quality": rag_quality_storage_status(settings),
+        "rag_rerank_enabled": settings.rag_rerank_enabled,
+        "rag_rerank_provider": settings.rag_rerank_provider,
+        "rag_feedback_enabled": settings.rag_feedback_enabled,
+        "rag_suggestions_enabled": settings.rag_suggestions_enabled,
         "version": getattr(settings, "app_version", "1.0.0"),
         "commit": getattr(settings, "app_commit", ""),
         "chat_model": settings.openai_chat_model,
@@ -416,6 +450,47 @@ def track_public_event(payload: TrackEventRequest, request: Request):
     return {"ok": True}
 
 
+@app.post("/rag/feedback")
+def rag_feedback(payload: RagFeedbackRequest, request: Request):
+    if not settings.rag_feedback_enabled:
+        raise AppError("rag_feedback_disabled", "Feedback RAG desabilitado neste ambiente.", 503)
+    update_rag_trace_actor(
+        settings,
+        payload.trace_id,
+        visitor_id=payload.visitor_id,
+        session_id=payload.session_id,
+    )
+    result = create_rag_feedback(
+        settings,
+        {
+            "trace_id": payload.trace_id,
+            "session_id": payload.session_id,
+            "visitor_id": payload.visitor_id,
+            "visitor_identity": payload.visitor_identity,
+            "rating": payload.rating,
+            "reason": payload.reason,
+            "comment": payload.comment,
+            "expected_answer": payload.expected_answer,
+        },
+    )
+    log_event(
+        settings,
+        "rag_feedback",
+        request=request,
+        visitor_id=payload.visitor_id,
+        session_id=payload.session_id,
+        actor_type=_actor_type(request, payload.visitor_identity),
+        payload={
+            "trace_id": payload.trace_id,
+            "rating": payload.rating,
+            "reason": payload.reason,
+            "suggestion_id": (result.get("suggestion") or {}).get("id"),
+            **({"identity": _with_identity({}, payload.visitor_identity).get("identity")} if payload.visitor_identity else {}),
+        },
+    )
+    return result
+
+
 def _parse_report(raw: str) -> tuple[str, str]:
     if raw.startswith("---"):
         parts = raw.split("---", 2)
@@ -453,6 +528,7 @@ def chat(payload: ChatRequest, request: Request):
         settings=settings,
     )
     response_body = _chat_response_from_result(result)
+    update_rag_trace_actor(settings, response_body.trace_id, visitor_id=payload.visitor_id, session_id=result.session_id)
     log_event(
         settings,
         "chat_exchange",
@@ -489,6 +565,7 @@ def chat_stream(payload: ChatRequest, request: Request):
 
                 result = item["result"]
                 response_body = _chat_response_from_result(result)
+                update_rag_trace_actor(settings, response_body.trace_id, visitor_id=payload.visitor_id, session_id=result.session_id)
                 yield _sse("stage", {"id": "saving_event", "label": "Salvando evento", "status": "active"})
                 event_start = time.perf_counter()
                 log_event(
@@ -585,6 +662,7 @@ def fit_stream(payload: FitScanRequest, request: Request):
                     continue
 
                 result = item["result"]
+                update_rag_trace_actor(settings, result.trace_id, visitor_id=payload.visitor_id, session_id=result.session_id)
                 sources = [SourceSummaryResponse(**source.__dict__) for source in result.sources]
                 evidence = [EvidenceResponse(**item.__dict__) for item in result.evidence]
                 docs = list(result.usage.get("retrieved_sources") or [])
@@ -617,6 +695,7 @@ def fit_stream(payload: FitScanRequest, request: Request):
                         "fit_score": result.fit_score,
                         "summary": result.summary,
                         "usage": result.usage,
+                        "trace_id": result.trace_id,
                         "sources": [source.model_dump() for source in sources],
                         "evidence_count": len(evidence),
                         **({"identity": _with_identity({}, payload.visitor_identity).get("identity")} if payload.visitor_identity else {}),
@@ -635,6 +714,7 @@ def fit_stream(payload: FitScanRequest, request: Request):
                         "summary": result.summary,
                         "fit_score": result.fit_score,
                         "analysis": result.analysis,
+                        "trace_id": result.trace_id,
                         "sources_summary": [source.model_dump() for source in sources],
                         "evidence": [item.model_dump() for item in evidence],
                         "usage": result.usage,
@@ -737,6 +817,7 @@ async def voice_chat(
         active_node=active_node,
         settings=settings,
     )
+    update_rag_trace_actor(settings, result.trace_id, visitor_id=visitor_id, session_id=result.session_id)
 
     audio_base64 = None
     tts_error = None
@@ -775,6 +856,7 @@ async def voice_chat(
         sources_summary=sources,
         evidence=evidence,
         usage=result.usage,
+        trace_id=result.trace_id,
         audio_base64=audio_base64,
         tts_error=tts_error,
     )

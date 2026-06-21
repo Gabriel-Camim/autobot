@@ -15,6 +15,7 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
 from config import Settings, get_settings
 from pgvector_store import pgvector_similarity_search, pgvector_status, uses_pgvector
+from rag_quality import rerank_candidate_payloads, save_rag_trace
 
 
 logger = logging.getLogger("gabriel_agent")
@@ -60,6 +61,7 @@ class AgentResult:
     sources: List[SourceSummary]
     evidence: List[RagEvidence]
     usage: Dict[str, Any]
+    trace_id: Optional[str] = None
 
 
 @dataclass
@@ -72,6 +74,7 @@ class FitAnalysisResult:
     sources: List[SourceSummary]
     evidence: List[RagEvidence]
     usage: Dict[str, Any]
+    trace_id: Optional[str] = None
 
 
 @dataclass
@@ -84,6 +87,8 @@ class PreparedAgentRun:
     messages: List[BaseMessage]
     retrieval_ms: float
     total_start: float
+    active_node: Optional[str] = None
+    rag_trace: Optional[Dict[str, Any]] = None
 
 
 class ConversationStore:
@@ -471,6 +476,31 @@ def _expand_retrieval_query(text: str, active_node: Optional[str]) -> str:
     return f"{text}\nTermos de busca derivados: {', '.join(sorted(additions))}"
 
 
+def _query_subqueries(text: str, active_node: Optional[str]) -> List[str]:
+    chunks = [text.strip()]
+    for marker in (" e ", " ou ", ",", ";", "\n"):
+        next_chunks: List[str] = []
+        for chunk in chunks:
+            parts = [part.strip() for part in chunk.split(marker) if part.strip()]
+            next_chunks.extend(parts if len(parts) > 1 else [chunk])
+        chunks = next_chunks
+    focus = sorted(_explicit_focus_terms(text) | _node_terms(active_node))
+    subqueries: List[str] = []
+    for chunk in chunks:
+        if len(chunk) >= 4:
+            subqueries.append(chunk[:240])
+    if focus:
+        subqueries.append("foco: " + ", ".join(focus[:12]))
+    seen: set[str] = set()
+    unique = []
+    for item in subqueries:
+        normalized = item.lower()
+        if normalized not in seen:
+            seen.add(normalized)
+            unique.append(item)
+    return unique[:8]
+
+
 def _node_terms(active_node: Optional[str]) -> set[str]:
     mapping = {
         "gabriel": {"gabriel", "perfil", "personalidade", "valores"},
@@ -666,7 +696,70 @@ def _lexical_matches(settings: Settings, query: str, active_node: Optional[str],
     return scored[:limit]
 
 
-def _retrieve_documents(settings: Settings, retrieval_query: str, active_node: Optional[str]) -> List[Tuple[Document, float]]:
+def _candidate_payload(
+    key: str,
+    doc: Document,
+    *,
+    channel: str,
+    distance: Optional[float],
+    relevance: float,
+    query: str,
+    active_node: Optional[str],
+) -> Dict[str, Any]:
+    metadata = doc.metadata or {}
+    reason = _match_reason(doc, query, active_node, channel, relevance)
+    return {
+        "id": key,
+        "source": str(metadata.get("source", "")),
+        "title": str(metadata.get("title", "Documento sem tÃ­tulo")),
+        "category": str(metadata.get("category", "geral")),
+        "summary": str(metadata.get("summary", "")),
+        "tags": _coerce_tags(metadata.get("tags", [])),
+        "priority": int(metadata.get("priority", 3) or 3),
+        "channel": channel,
+        "distance": float(distance) if distance is not None else None,
+        "base_relevance": round(float(relevance), 4),
+        "match_reason": reason,
+        "excerpt": _excerpt_for_query(doc.page_content, query, max_chars=260),
+    }
+
+
+def _retrieve_documents_with_trace(
+    settings: Settings,
+    retrieval_query: str,
+    active_node: Optional[str],
+) -> Tuple[List[Tuple[Document, float]], Dict[str, Any]]:
+    compat_retriever = globals().get("_retrieve_documents")
+    if compat_retriever is not None and not getattr(compat_retriever, "_traced_wrapper", False):
+        selected = compat_retriever(settings, retrieval_query, active_node)
+        evidence_candidates = [
+            _candidate_payload(
+                _metadata_key(doc),
+                doc,
+                channel=str((doc.metadata or {}).get("_retrieval_channel") or "test"),
+                distance=(doc.metadata or {}).get("_retrieval_distance", score),
+                relevance=float((doc.metadata or {}).get("_retrieval_relevance_score") or _document_relevance(doc, retrieval_query, active_node)),
+                query=retrieval_query,
+                active_node=active_node,
+            )
+            for doc, score in selected
+        ]
+        reranked = rerank_candidate_payloads(settings, evidence_candidates)
+        selected_ids = {_metadata_key(doc) for doc, _score in selected}
+        return selected, {
+            "subqueries": _query_subqueries(retrieval_query, active_node),
+            "vector_limit": 0,
+            "lexical_limit": 0,
+            "candidate_count": len(evidence_candidates),
+            "selected_count": len(selected),
+            "candidates_before_rerank": evidence_candidates,
+            "candidates_after_rerank": [
+                {**candidate, "selected": str(candidate.get("id")) in selected_ids}
+                for candidate in reranked
+            ],
+            "rerank": {"enabled": settings.rag_rerank_enabled, "provider": settings.rag_rerank_provider},
+        }
+
     vector_limit = max(settings.rag_k * 4, 24)
     lexical_limit = max(settings.rag_lexical_k, settings.rag_k * 3, 12)
     if uses_pgvector(settings):
@@ -696,37 +789,94 @@ def _retrieve_documents(settings: Settings, retrieval_query: str, active_node: O
     for doc, score in _lexical_matches(settings, retrieval_query, active_node, lexical_limit):
         remember_candidate(doc, score, "lexical", -score)
 
-    candidates.sort(key=lambda item: (-item[3], item[1]))
+    doc_by_key: Dict[str, Tuple[Document, float, float]] = {}
+    for doc, score, _channel, relevance in candidates:
+        key = _metadata_key(doc)
+        previous = doc_by_key.get(key)
+        if previous is None or relevance > previous[2]:
+            doc_by_key[key] = (doc, score, relevance)
+
+    merged_candidates: List[Dict[str, Any]] = []
+    for key, (doc, score, relevance) in doc_by_key.items():
+        channel_set = channels_by_key.get(key, set())
+        channel = "hybrid" if len(channel_set) > 1 else next(iter(channel_set or {"unknown"}))
+        merged_candidates.append(
+            _candidate_payload(
+                key,
+                doc,
+                channel=channel,
+                distance=best_distance_by_key.get(key),
+                relevance=best_relevance_by_key.get(key, relevance),
+                query=retrieval_query,
+                active_node=active_node,
+            )
+        )
+
+    candidates_before = sorted(merged_candidates, key=lambda item: (-float(item.get("base_relevance") or 0), str(item.get("source") or "")))
+    candidates_after = rerank_candidate_payloads(settings, candidates_before)
+
     selected: List[Tuple[Document, float]] = []
     seen: set[str] = set()
     source_counts: Dict[str, int] = {}
-    for doc, score, _channel, relevance in candidates:
+    for candidate in candidates_after:
+        relevance = float(candidate.get("rerank_score") or candidate.get("base_relevance") or 0)
         if relevance <= 0:
             continue
-        key = _metadata_key(doc)
+        key = str(candidate.get("id") or "")
         if key in seen:
             continue
+        doc_tuple = doc_by_key.get(key)
+        if not doc_tuple:
+            continue
+        doc, score, base_relevance = doc_tuple
         source = str((doc.metadata or {}).get("source", key))
         if source_counts.get(source, 0) >= 2:
             continue
         seen.add(key)
         source_counts[source] = source_counts.get(source, 0) + 1
-        channel_set = channels_by_key.get(key, {_channel})
-        channel = "hybrid" if len(channel_set) > 1 else next(iter(channel_set))
+        channel = str(candidate.get("channel") or "unknown")
         evidence_doc = Document(
             page_content=doc.page_content,
             metadata={
                 **(doc.metadata or {}),
                 "_retrieval_channel": channel,
-                "_retrieval_distance": best_distance_by_key.get(key),
-                "_retrieval_relevance_score": best_relevance_by_key.get(key, relevance),
-                "_retrieval_match_reason": _match_reason(doc, retrieval_query, active_node, channel, best_relevance_by_key.get(key, relevance)),
+                "_retrieval_distance": candidate.get("distance"),
+                "_retrieval_relevance_score": relevance,
+                "_retrieval_base_relevance_score": base_relevance,
+                "_retrieval_rerank_score": relevance,
+                "_retrieval_match_reason": candidate.get("match_reason")
+                or _match_reason(doc, retrieval_query, active_node, channel, relevance),
             },
         )
         selected.append((evidence_doc, score))
         if len(selected) >= max(settings.rag_k, 1):
             break
+    selected_ids = {_metadata_key(doc) for doc, _score in selected}
+    trace = {
+        "subqueries": _query_subqueries(retrieval_query, active_node),
+        "vector_limit": vector_limit,
+        "lexical_limit": lexical_limit,
+        "candidate_count": len(candidates_before),
+        "selected_count": len(selected),
+        "candidates_before_rerank": candidates_before[:32],
+        "candidates_after_rerank": [
+            {**candidate, "selected": str(candidate.get("id")) in selected_ids}
+            for candidate in candidates_after[:32]
+        ],
+        "rerank": {
+            "enabled": settings.rag_rerank_enabled,
+            "provider": settings.rag_rerank_provider,
+        },
+    }
+    return selected, trace
+
+
+def _retrieve_documents(settings: Settings, retrieval_query: str, active_node: Optional[str]) -> List[Tuple[Document, float]]:
+    selected, _trace = _retrieve_documents_with_trace(settings, retrieval_query, active_node)
     return selected
+
+
+_retrieve_documents._traced_wrapper = True  # type: ignore[attr-defined]
 
 
 def build_rag_probe(settings: Settings, question: str, active_context: Optional[str] = None, *, limit: Optional[int] = None) -> Dict[str, Any]:
@@ -735,7 +885,7 @@ def build_rag_probe(settings: Settings, question: str, active_context: Optional[
         raise AppError("empty_rag_probe", "Informe uma pergunta para testar o RAG.", 400)
     start = time.perf_counter()
     retrieval_query = _expand_retrieval_query(clean_question, active_context)
-    docs_with_scores = _retrieve_documents(settings, retrieval_query, active_context)
+    docs_with_scores, trace = _retrieve_documents_with_trace(settings, retrieval_query, active_context)
     took_ms = round((time.perf_counter() - start) * 1000, 2)
     evidence = _evidence_from_docs(docs_with_scores, retrieval_query, active_context)
     if limit is not None and limit > 0:
@@ -744,8 +894,13 @@ def build_rag_probe(settings: Settings, question: str, active_context: Optional[
         "question": clean_question,
         "active_context": active_context,
         "retrieval_query": retrieval_query,
+        "subqueries": trace.get("subqueries", []),
         "documents": len(docs_with_scores),
         "took_ms": took_ms,
+        "candidate_count": trace.get("candidate_count", 0),
+        "rerank": trace.get("rerank", {}),
+        "candidates_before_rerank": trace.get("candidates_before_rerank", []),
+        "candidates_after_rerank": trace.get("candidates_after_rerank", []),
         "evidence": [item.__dict__ for item in evidence],
     }
 
@@ -965,6 +1120,49 @@ Analysis instructions:
 """.strip()
 
 
+def _save_trace_for_answer(
+    settings: Settings,
+    *,
+    session_id: str,
+    question: str,
+    answer: str,
+    active_node: Optional[str],
+    retrieval_query: str,
+    docs_with_scores: List[Tuple[Document, float]],
+    rag_trace: Optional[Dict[str, Any]],
+    usage: Dict[str, Any],
+    model: str,
+) -> Optional[str]:
+    trace = rag_trace or {}
+    selected_sources = [
+        str((doc.metadata or {}).get("source", ""))
+        for doc, _score in docs_with_scores
+        if (doc.metadata or {}).get("source")
+    ]
+    payload = {
+        "session_id": session_id,
+        "active_context": active_node,
+        "question": question,
+        "answer": answer,
+        "retrieval_query": retrieval_query,
+        "subqueries": trace.get("subqueries") or _query_subqueries(retrieval_query, active_node),
+        "candidates": trace.get("candidates_after_rerank") or [],
+        "selected_sources": selected_sources,
+        "rerank": trace.get("rerank") or {},
+        "metrics": {
+            **(usage or {}),
+            "candidate_count": trace.get("candidate_count"),
+            "selected_count": len(selected_sources),
+        },
+        "model": model,
+    }
+    try:
+        return save_rag_trace(settings, payload)
+    except Exception:
+        logger.exception("rag_trace_save_failed")
+        return None
+
+
 def _extract_fit_score(answer: str) -> Optional[int]:
     match = re.search(r"fit\s+estimado\s*:\s*(\d{1,3})\s*/\s*100", answer, flags=re.IGNORECASE)
     if not match:
@@ -1022,7 +1220,7 @@ def stream_fit_analysis(
     retrieval_start = time.perf_counter()
     retrieval_query = _job_fit_query(job_title, company, clean_description)
     try:
-        docs_with_scores = _retrieve_documents(settings, retrieval_query, None)
+        docs_with_scores, rag_trace = _retrieve_documents_with_trace(settings, retrieval_query, None)
     except AppError:
         raise
     except Exception as exc:
@@ -1147,6 +1345,19 @@ def stream_fit_analysis(
         }
     )
     _get_store(settings).append(session_id, f"Análise de vaga: {job_title or 'vaga sem título'}", answer)
+    trace_id = _save_trace_for_answer(
+        settings,
+        session_id=session_id,
+        question=f"Fit Scanner: {job_title or 'vaga sem titulo'}\n{clean_description[:3000]}",
+        answer=answer,
+        active_node="fit",
+        retrieval_query=retrieval_query,
+        docs_with_scores=docs_with_scores,
+        rag_trace=rag_trace,
+        usage=usage,
+        model=model_used,
+    )
+    usage["trace_id"] = trace_id
     yield {
         "event": "done",
         "result": FitAnalysisResult(
@@ -1158,6 +1369,7 @@ def stream_fit_analysis(
             sources=_source_summaries(docs_with_scores),
             evidence=evidence,
             usage=usage,
+            trace_id=trace_id,
         ),
     }
 
@@ -1178,7 +1390,7 @@ def _prepare_agent_run(
     retrieval_query = _expand_retrieval_query(clean_message, active_node)
     retrieval_start = time.perf_counter()
     try:
-        docs_with_scores = _retrieve_documents(settings, retrieval_query, active_node)
+        docs_with_scores, rag_trace = _retrieve_documents_with_trace(settings, retrieval_query, active_node)
     except AppError:
         raise
     except Exception as exc:
@@ -1210,6 +1422,8 @@ def _prepare_agent_run(
         messages=messages,
         retrieval_ms=retrieval_ms,
         total_start=total_start,
+        active_node=active_node,
+        rag_trace=rag_trace,
     )
 
 
@@ -1250,6 +1464,19 @@ def _finalize_agent_result(
             "evidence_count": len(prepared.evidence),
         }
     )
+    trace_id = _save_trace_for_answer(
+        settings,
+        session_id=prepared.session_id,
+        question=prepared.clean_message,
+        answer=answer,
+        active_node=prepared.active_node,
+        retrieval_query=prepared.retrieval_query,
+        docs_with_scores=prepared.docs_with_scores,
+        rag_trace=prepared.rag_trace,
+        usage=usage,
+        model=model or settings.openai_chat_model,
+    )
+    usage["trace_id"] = trace_id
     return AgentResult(
         session_id=prepared.session_id,
         answer=answer,
@@ -1257,6 +1484,7 @@ def _finalize_agent_result(
         sources=_source_summaries(prepared.docs_with_scores),
         evidence=prepared.evidence,
         usage=usage,
+        trace_id=trace_id,
     )
 
 
@@ -1316,7 +1544,7 @@ def stream_answer_question(
     yield _stage("retrieving_context", "Buscando Markdown", "active")
     retrieval_start = time.perf_counter()
     try:
-        docs_with_scores = _retrieve_documents(settings, retrieval_query, active_node)
+        docs_with_scores, rag_trace = _retrieve_documents_with_trace(settings, retrieval_query, active_node)
     except AppError:
         raise
     except Exception as exc:
@@ -1351,6 +1579,8 @@ def stream_answer_question(
         messages=messages,
         retrieval_ms=retrieval_ms,
         total_start=total_start,
+        active_node=active_node,
+        rag_trace=rag_trace,
     )
     yield _stage("selecting_evidence", "Selecionando evidências", "complete", elapsed_ms=round((time.perf_counter() - evidence_start) * 1000, 2))
 
