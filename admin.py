@@ -132,6 +132,8 @@ class ReindexStatusResponse(BaseModel):
     sample_ok: Optional[bool] = None
     sample_error: Optional[str] = None
     github_branch: Optional[str] = None
+    knowledge_dir: Optional[str] = None
+    storage_target: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -678,6 +680,8 @@ def _reindex_diagnostics(settings: Settings, docs: List[Any]) -> Dict[str, Any]:
         "sample_ok": None,
         "sample_error": vector_status.get("error"),
         "github_branch": settings.github_branch,
+        "knowledge_dir": str(settings.resolved_knowledge_dir),
+        "storage_target": settings.pgvector_table if uses_pgvector(settings) else str(settings.resolved_chroma_dir),
     }
     if not sample_query:
         diagnostics["sample_error"] = "Nenhum documento público disponível para consulta sintética."
@@ -755,6 +759,8 @@ def reindex_admin(request: Request):
         sample_ok=None,
         sample_error=None,
         github_branch=settings.github_branch,
+        knowledge_dir=str(settings.resolved_knowledge_dir),
+        storage_target=settings.pgvector_table if uses_pgvector(settings) else str(settings.resolved_chroma_dir),
         error=None,
     )
     log_event(settings, "admin_reindex_start", request=request, session_id=user.login, actor_type="admin")
