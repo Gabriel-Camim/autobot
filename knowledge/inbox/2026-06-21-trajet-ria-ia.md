@@ -1,5 +1,5 @@
 ---
-title: Curadoria RAG: trajetória ia
+title: "Curadoria RAG: trajetória ia"
 category: curadoria
 tags:
 - feedback

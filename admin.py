@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Literal, Optional
 from urllib.parse import urlencode, urlsplit, urlunsplit
 
 import httpx
+import yaml
 from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
@@ -32,6 +33,7 @@ from rag_quality import (
     list_rag_feedback,
     list_rag_traces,
     triage_rag_feedback,
+    update_knowledge_suggestion_details,
     update_knowledge_suggestion_status,
 )
 from warmup import start_warmup, warmup_status
@@ -162,6 +164,15 @@ class RagFeedbackTriageRequest(BaseModel):
 class SuggestionActionRequest(BaseModel):
     message: Optional[str] = None
     status: Optional[str] = None
+
+
+class SuggestionUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    suggested_path: Optional[str] = None
+    frontmatter: Optional[Dict[str, Any]] = None
+    draft_markdown: Optional[str] = None
+    status: Optional[str] = None
+    rationale: Optional[str] = None
 
 
 TreeNode.model_rebuild()
@@ -364,6 +375,29 @@ def _resolve_content_path(raw_path: str, settings: Settings, *, require_markdown
     if target != base_resolved and base_resolved not in target.parents:
         raise AppError("invalid_path", "Caminho fora do diretório permitido.", 400)
     return normalized, target
+
+
+def _validate_markdown_frontmatter(content: str) -> Dict[str, Any]:
+    if not content.startswith("---"):
+        raise AppError("invalid_markdown_frontmatter", "O Markdown precisa começar com frontmatter YAML entre ---.", 422)
+    parts = content.split("---", 2)
+    if len(parts) < 3:
+        raise AppError("invalid_markdown_frontmatter", "Frontmatter YAML incompleto. Feche o bloco com ---.", 422)
+    try:
+        metadata = yaml.safe_load(parts[1]) or {}
+    except yaml.YAMLError as exc:
+        raise AppError(
+            "invalid_markdown_frontmatter",
+            f"Frontmatter YAML inválido: {_sanitize_error(exc)}",
+            422,
+        ) from exc
+    if not isinstance(metadata, dict):
+        raise AppError("invalid_markdown_frontmatter", "Frontmatter precisa ser um objeto YAML.", 422)
+    required = ("title", "category", "visibility", "priority", "summary")
+    missing = [field for field in required if metadata.get(field) in (None, "")]
+    if missing:
+        raise AppError("invalid_markdown_frontmatter", f"Frontmatter sem campos obrigatórios: {', '.join(missing)}.", 422)
+    return metadata
 
 
 def _prompt_paths(settings: Settings) -> tuple[str, Path]:
@@ -600,6 +634,7 @@ def write_knowledge_file(payload: FileWriteRequest, request: Request):
     settings = _settings()
     user = _require_admin(request, settings)
     normalized, target = _resolve_content_path(payload.path, settings)
+    _validate_markdown_frontmatter(payload.content)
     message = payload.message or f"admin: update {normalized}"
     commit = _github_put(settings, normalized, payload.content, message)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -646,6 +681,7 @@ async def import_markdown(request: Request, directory: str = Form(...), files: L
         if not filename.lower().endswith(".md"):
             raise AppError("invalid_upload", "Importação aceita apenas arquivos .md.", 400)
         content = (await upload.read()).decode("utf-8")
+        _validate_markdown_frontmatter(content)
         repo_path = _normalize_posix_path(f"{directory_path}/{filename}")
         _, target = _resolve_content_path(repo_path, settings)
         commit = _github_put(settings, repo_path, content, f"admin: import {repo_path}")
@@ -952,6 +988,29 @@ def admin_knowledge_suggestion_detail(suggestion_id: str, request: Request):
     return suggestion
 
 
+@router.put("/knowledge/suggestions/{suggestion_id}")
+def admin_knowledge_suggestion_update(suggestion_id: str, payload: SuggestionUpdateRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    updates = payload.model_dump(exclude_unset=True)
+    if updates.get("suggested_path"):
+        _resolve_content_path(updates["suggested_path"], settings, require_markdown=True)
+    if updates.get("draft_markdown"):
+        _validate_markdown_frontmatter(updates["draft_markdown"])
+    suggestion = update_knowledge_suggestion_details(settings, suggestion_id, updates)
+    if not suggestion:
+        raise AppError("knowledge_suggestion_not_found", "Sugestão não encontrada.", 404)
+    log_event(
+        settings,
+        "admin_knowledge_suggestion_update",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"suggestion_id": suggestion_id, "path": suggestion.get("suggested_path")},
+    )
+    return suggestion
+
+
 @router.post("/knowledge/suggestions/{suggestion_id}/accept")
 def admin_knowledge_suggestion_accept(suggestion_id: str, payload: SuggestionActionRequest, request: Request):
     settings = _settings()
@@ -982,10 +1041,11 @@ def admin_knowledge_suggestion_create_markdown(suggestion_id: str, payload: Sugg
     if not suggestion:
         raise AppError("knowledge_suggestion_not_found", "Sugestão não encontrada.", 404)
     repo_path, _target = _resolve_content_path(suggestion["suggested_path"], settings, require_markdown=True)
+    _validate_markdown_frontmatter(suggestion["draft_markdown"])
     commit = _github_put(settings, repo_path, suggestion["draft_markdown"], payload.message or f"admin: create suggested knowledge {repo_path}")
-    update_knowledge_suggestion_status(settings, suggestion_id, "converted_to_markdown", {"commit_sha": commit.commit_sha, "path": repo_path, "converted_by": user.login})
+    updated = update_knowledge_suggestion_status(settings, suggestion_id, "converted_to_markdown", {"commit_sha": commit.commit_sha, "path": repo_path, "converted_by": user.login})
     log_event(settings, "admin_knowledge_suggestion_markdown", request=request, session_id=user.login, actor_type="admin", payload={"suggestion_id": suggestion_id, "path": repo_path, "commit_sha": commit.commit_sha})
-    return commit
+    return {"ok": True, "path": repo_path, "commit": commit, "suggestion": updated}
 
 
 @router.post("/knowledge/suggestions/{suggestion_id}/create-eval-case")

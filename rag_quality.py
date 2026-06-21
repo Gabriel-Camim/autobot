@@ -4,9 +4,12 @@ import json
 import re
 import sqlite3
 import threading
+import unicodedata
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
+
+import yaml
 
 from config import Settings
 
@@ -327,7 +330,8 @@ def get_rag_trace(settings: Settings, trace_id: str) -> Optional[Dict[str, Any]]
 
 
 def _slugify(text: str, fallback: str = "sugestao") -> str:
-    normalized = re.sub(r"[^a-zA-Z0-9]+", "-", (text or "").lower()).strip("-")
+    ascii_text = unicodedata.normalize("NFKD", text or "").encode("ascii", "ignore").decode("ascii")
+    normalized = re.sub(r"[^a-zA-Z0-9]+", "-", ascii_text.lower()).strip("-")
     return (normalized or fallback)[:72].strip("-") or fallback
 
 
@@ -345,20 +349,17 @@ def _suggested_path(trace: Optional[Dict[str, Any]], reason: str) -> str:
 
 
 def _draft_markdown(frontmatter: Dict[str, Any], trace: Optional[Dict[str, Any]], feedback: Dict[str, Any]) -> str:
-    tags = frontmatter.get("tags") or []
-    yaml_tags = "\n".join(f"- {tag}" for tag in tags)
     question = str((trace or {}).get("question") or "Pergunta sem trace")
     answer = str((trace or {}).get("answer_excerpt") or "")
     selected = ", ".join(str(source) for source in (trace or {}).get("selected_sources") or [])
+    yaml_frontmatter = yaml.safe_dump(
+        frontmatter,
+        allow_unicode=True,
+        sort_keys=False,
+        default_flow_style=False,
+    ).strip()
     return f"""---
-title: {frontmatter["title"]}
-category: {frontmatter["category"]}
-tags:
-{yaml_tags}
-visibility: draft
-priority: {frontmatter["priority"]}
-updated_at: '{frontmatter["updated_at"]}'
-summary: {frontmatter["summary"]}
+{yaml_frontmatter}
 ---
 
 # {frontmatter["title"]}
@@ -617,6 +618,54 @@ def update_knowledge_suggestion_status(
     return get_knowledge_suggestion(settings, suggestion_id)
 
 
+def update_knowledge_suggestion_details(
+    settings: Settings,
+    suggestion_id: str,
+    updates: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    suggestion = get_knowledge_suggestion(settings, suggestion_id)
+    if not suggestion:
+        return None
+
+    payload = suggestion.get("payload") or {}
+    payload_update = updates.get("payload_update")
+    if isinstance(payload_update, dict):
+        payload.update(payload_update)
+
+    marker = _placeholder(settings)
+    fields: List[str] = [f"updated_at = {marker}"]
+    params: List[Any] = [_now()]
+    allowed_plain = {
+        "title": "title",
+        "suggested_path": "suggested_path",
+        "draft_markdown": "draft_markdown",
+        "status": "status",
+        "suggestion_type": "suggestion_type",
+        "rationale": "rationale",
+    }
+    for key, column in allowed_plain.items():
+        if key in updates and updates[key] is not None:
+            fields.append(f"{column} = {marker}")
+            params.append(updates[key])
+    if "confidence" in updates and updates["confidence"] is not None:
+        fields.append(f"confidence = {marker}")
+        params.append(float(updates["confidence"]))
+    if "frontmatter" in updates and updates["frontmatter"] is not None:
+        fields.append(f"frontmatter_json = {marker}")
+        params.append(_safe_json(updates["frontmatter"]))
+    fields.append(f"payload_json = {marker}")
+    params.append(_safe_json(payload))
+    params.append(suggestion_id)
+
+    with _lock:
+        with _connect(settings) as conn:
+            conn.execute(
+                f"UPDATE knowledge_suggestions SET {', '.join(fields)} WHERE id = {marker}",
+                params,
+            )
+    return get_knowledge_suggestion(settings, suggestion_id)
+
+
 def eval_case_from_suggestion(suggestion: Dict[str, Any]) -> Dict[str, Any]:
     trace = ((suggestion.get("payload") or {}).get("trace") or {})
     question = str(trace.get("question") or suggestion.get("title") or "Caso sugerido")
@@ -626,7 +675,7 @@ def eval_case_from_suggestion(suggestion: Dict[str, Any]) -> Dict[str, Any]:
         "id": f"suggestion-{str(suggestion.get('id'))[:8]}",
         "question": question[:500],
         "active_context": active_context,
-        "expected_sources": selected[:4],
+        "expected_sources": list(dict.fromkeys(str(source) for source in selected if source))[:4],
         "forbidden_terms": [],
         "min_docs": 1,
     }
