@@ -10,7 +10,7 @@ tags:
 - dados
 visibility: public
 priority: 1
-updated_at: '2026-06-09'
+updated_at: '2026-06-21'
 summary: Competências técnicas consolidadas a partir do currículo.
 ---
 
@@ -30,7 +30,7 @@ n8n, APIs REST, webhooks, JSON, OpenAI API, Gamma API, parsing de respostas, tra
 
 ## Desenvolvimento e arquitetura
 
-JavaScript, Python, HTML/CSS, React/Vite, GitHub, Visual Studio Code, Vercel, Render, Docker, backend, APIs internas, arquitetura modular, autenticação, permissões, CI/CD e banco multitenant.
+JavaScript, Python, HTML/CSS, React/Vite, GitHub, Visual Studio Code, Vercel, Render, Docker, backend, APIs internas, arquitetura modular, autenticação, permissões, CI/CD, banco multitenant e metodologias ágeis.
 
 ## Marketing digital e RevOps
 
