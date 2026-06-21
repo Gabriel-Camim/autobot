@@ -66,5 +66,18 @@
     ],
     "forbidden_terms": [],
     "min_docs": 1
+  },
+  {
+    "id": "suggestion-8b2b1ead-7",
+    "question": "trajetória ia",
+    "active_context": "gabriel",
+    "expected_sources": [
+      "trajetoria/formacao-academica.md",
+      "gabriel/perfil.md",
+      "skills/dados-ia-automacoes-sistemas.md",
+      "gabriel/posicionamento.md"
+    ],
+    "forbidden_terms": [],
+    "min_docs": 1
   }
 ]
