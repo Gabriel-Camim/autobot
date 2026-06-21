@@ -204,3 +204,30 @@ def test_stream_answer_question_handles_aggregate_chunks_after_sanitizing(monkey
     done = [event for event in events if event["event"] == "done"][0]
     assert deltas == "Hard skills: Python."
     assert done["result"].answer == "Hard skills: Python."
+
+
+def test_build_rag_probe_returns_structured_evidence(monkeypatch):
+    doc = Document(
+        page_content="Gabriel usa Python, SQL, FastAPI e LangChain para construir agentes e automacoes.",
+        metadata={
+            "source": "skills/hard-skills.md",
+            "title": "Hard skills",
+            "category": "skills",
+            "summary": "Competencias tecnicas.",
+            "tags": "python, sql, langchain",
+            "priority": 1,
+            "_retrieval_channel": "hybrid",
+            "_retrieval_distance": 0.22,
+            "_retrieval_relevance_score": 8.5,
+        },
+    )
+    monkeypatch.setattr(agent, "_retrieve_documents", lambda _settings, _query, _active_node: [(doc, 0.22)])
+
+    settings = Settings(_env_file=None)
+    result = agent.build_rag_probe(settings, "quais hard skills?", "stack")
+
+    assert result["documents"] == 1
+    assert result["evidence"][0]["source"] == "skills/hard-skills.md"
+    assert result["evidence"][0]["channel"] == "hybrid"
+    assert result["evidence"][0]["distance"] == 0.22
+    assert "Python" in result["evidence"][0]["excerpt"]

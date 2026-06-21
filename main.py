@@ -55,6 +55,20 @@ class SourceSummaryResponse(BaseModel):
     tags: List[str] = Field(default_factory=list)
 
 
+class EvidenceResponse(BaseModel):
+    source: str
+    title: str
+    category: str
+    summary: str
+    tags: List[str] = Field(default_factory=list)
+    priority: int
+    excerpt: str
+    channel: str
+    distance: Optional[float] = None
+    relevance_score: float
+    match_reason: str
+
+
 class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
@@ -77,6 +91,7 @@ class ChatResponse(BaseModel):
     answer: str
     detected_language: str
     sources_summary: List[SourceSummaryResponse]
+    evidence: List[EvidenceResponse] = Field(default_factory=list)
     usage: dict
 
 
@@ -199,11 +214,13 @@ def _vector_index_ready() -> bool:
 
 def _chat_response_from_result(result: AgentResult) -> ChatResponse:
     sources = [SourceSummaryResponse(**source.__dict__) for source in result.sources]
+    evidence = [EvidenceResponse(**item.__dict__) for item in result.evidence]
     return ChatResponse(
         session_id=result.session_id,
         answer=result.answer,
         detected_language=result.detected_language,
         sources_summary=sources,
+        evidence=evidence,
         usage=result.usage,
     )
 
@@ -566,6 +583,7 @@ def fit_stream(payload: FitScanRequest, request: Request):
 
                 result = item["result"]
                 sources = [SourceSummaryResponse(**source.__dict__) for source in result.sources]
+                evidence = [EvidenceResponse(**item.__dict__) for item in result.evidence]
                 docs = list(result.usage.get("retrieved_sources") or [])
                 yield _sse("stage", {"id": "saving_scan", "label": "Salvando análise", "status": "active"})
                 event_start = time.perf_counter()
@@ -597,6 +615,7 @@ def fit_stream(payload: FitScanRequest, request: Request):
                         "summary": result.summary,
                         "usage": result.usage,
                         "sources": [source.model_dump() for source in sources],
+                        "evidence_count": len(evidence),
                         **({"identity": _with_identity({}, payload.visitor_identity).get("identity")} if payload.visitor_identity else {}),
                     },
                 )
@@ -614,6 +633,7 @@ def fit_stream(payload: FitScanRequest, request: Request):
                         "fit_score": result.fit_score,
                         "analysis": result.analysis,
                         "sources_summary": [source.model_dump() for source in sources],
+                        "evidence": [item.model_dump() for item in evidence],
                         "usage": result.usage,
                     },
                 )
@@ -723,6 +743,7 @@ async def voice_chat(
         tts_error = exc.message
 
     sources = [SourceSummaryResponse(**source.__dict__) for source in result.sources]
+    evidence = [EvidenceResponse(**item.__dict__) for item in result.evidence]
     log_event(
         settings,
         "voice_chat_exchange",
@@ -738,6 +759,7 @@ async def voice_chat(
             "usage": result.usage,
             "tts_error": tts_error,
             "sources": [source.model_dump() for source in sources],
+            "evidence_count": len(evidence),
             **({"identity": _with_identity({}, identity_data).get("identity")} if identity_data else {}),
         },
     )
@@ -748,6 +770,7 @@ async def voice_chat(
         answer=result.answer,
         detected_language=result.detected_language,
         sources_summary=sources,
+        evidence=evidence,
         usage=result.usage,
         audio_base64=audio_base64,
         tts_error=tts_error,

@@ -38,11 +38,27 @@ class SourceSummary:
 
 
 @dataclass
+class RagEvidence:
+    source: str
+    title: str
+    category: str
+    summary: str
+    tags: List[str]
+    priority: int
+    excerpt: str
+    channel: str
+    distance: Optional[float]
+    relevance_score: float
+    match_reason: str
+
+
+@dataclass
 class AgentResult:
     session_id: str
     answer: str
     detected_language: str
     sources: List[SourceSummary]
+    evidence: List[RagEvidence]
     usage: Dict[str, Any]
 
 
@@ -54,6 +70,7 @@ class FitAnalysisResult:
     fit_score: Optional[int]
     analysis: Dict[str, Any]
     sources: List[SourceSummary]
+    evidence: List[RagEvidence]
     usage: Dict[str, Any]
 
 
@@ -63,6 +80,7 @@ class PreparedAgentRun:
     clean_message: str
     retrieval_query: str
     docs_with_scores: List[Tuple[Document, float]]
+    evidence: List[RagEvidence]
     messages: List[BaseMessage]
     retrieval_ms: float
     total_start: float
@@ -496,6 +514,15 @@ def _metadata_text(doc: Document) -> str:
     return " ".join(str(value) for value in metadata.values())
 
 
+def _coerce_tags(tags: Any) -> List[str]:
+    if isinstance(tags, list):
+        return [str(tag).strip() for tag in tags if str(tag).strip()]
+    if isinstance(tags, str):
+        cleaned = tags.strip().strip("[]")
+        return [tag.strip().strip("'\"") for tag in cleaned.split(",") if tag.strip().strip("'\"")]
+    return []
+
+
 def _document_relevance(
     doc: Document,
     query: str,
@@ -532,6 +559,77 @@ def _document_relevance(
     if source.startswith("reports/"):
         score -= 100
     return score
+
+
+def _excerpt_for_query(text: str, query: str, max_chars: int = 420) -> str:
+    clean_text = " ".join((text or "").split())
+    if len(clean_text) <= max_chars:
+        return clean_text
+    query_terms = [term for term in _tokens(query) if len(term) >= 4]
+    lower_text = clean_text.lower()
+    hit = -1
+    for term in query_terms:
+        hit = lower_text.find(term.lower())
+        if hit >= 0:
+            break
+    if hit < 0:
+        return clean_text[: max_chars - 1].rstrip() + "..."
+    start = max(0, hit - max_chars // 3)
+    end = min(len(clean_text), start + max_chars)
+    if end - start < max_chars:
+        start = max(0, end - max_chars)
+    prefix = "..." if start > 0 else ""
+    suffix = "..." if end < len(clean_text) else ""
+    return f"{prefix}{clean_text[start:end].strip()}{suffix}"
+
+
+def _match_reason(doc: Document, query: str, active_node: Optional[str], channel: str, relevance: float) -> str:
+    metadata = doc.metadata or {}
+    priority = int(metadata.get("priority", 3) or 3)
+    metadata_terms = _tokens(_metadata_text(doc))
+    content_terms = _tokens(doc.page_content)
+    query_terms = _tokens(query) | _explicit_focus_terms(query)
+    overlaps = sorted((query_terms & metadata_terms) | (query_terms & content_terms))
+    focus_terms = sorted((_explicit_focus_terms(query) or _node_terms(active_node)) & metadata_terms)
+    parts = [f"canal {channel}", f"prioridade {priority}", f"score {round(relevance, 2)}"]
+    if overlaps:
+        parts.append("termos: " + ", ".join(overlaps[:5]))
+    if focus_terms:
+        parts.append("foco: " + ", ".join(focus_terms[:4]))
+    return "; ".join(parts)
+
+
+def _evidence_from_doc(doc: Document, score: float, query: str, active_node: Optional[str]) -> RagEvidence:
+    metadata = doc.metadata or {}
+    channel = str(metadata.get("_retrieval_channel") or "unknown")
+    distance = metadata.get("_retrieval_distance")
+    relevance = float(metadata.get("_retrieval_relevance_score") or _document_relevance(doc, query, active_node))
+    return RagEvidence(
+        source=str(metadata.get("source", "")),
+        title=str(metadata.get("title", "Documento sem título")),
+        category=str(metadata.get("category", "geral")),
+        summary=str(metadata.get("summary", "Fonte usada pelo agente.")),
+        tags=_coerce_tags(metadata.get("tags", [])),
+        priority=int(metadata.get("priority", 3) or 3),
+        excerpt=_excerpt_for_query(doc.page_content, query),
+        channel=channel,
+        distance=float(distance) if distance is not None else (float(score) if channel == "vector" else None),
+        relevance_score=round(relevance, 4),
+        match_reason=str(metadata.get("_retrieval_match_reason") or _match_reason(doc, query, active_node, channel, relevance)),
+    )
+
+
+def _evidence_from_docs(docs_with_scores: List[Tuple[Document, float]], query: str, active_node: Optional[str]) -> List[RagEvidence]:
+    evidence: List[RagEvidence] = []
+    seen: set[str] = set()
+    for doc, score in docs_with_scores:
+        item = _evidence_from_doc(doc, score, query, active_node)
+        key = f"{item.source}:{item.excerpt[:80]}"
+        if key in seen:
+            continue
+        seen.add(key)
+        evidence.append(item)
+    return evidence
 
 
 def settings_like_vector_ceiling(vector_score: float) -> float:
@@ -578,14 +676,25 @@ def _retrieve_documents(settings: Settings, retrieval_query: str, active_node: O
         vectorstore = _build_vectorstore(settings)
         docs_with_scores = vectorstore.similarity_search_with_score(retrieval_query, k=vector_limit)
     candidates: List[Tuple[Document, float, str, float]] = []
+    channels_by_key: Dict[str, set[str]] = {}
+    best_distance_by_key: Dict[str, float] = {}
+    best_relevance_by_key: Dict[str, float] = {}
+
+    def remember_candidate(doc: Document, score: float, channel: str, relevance: float) -> None:
+        key = _metadata_key(doc)
+        channels_by_key.setdefault(key, set()).add(channel)
+        if channel == "vector":
+            best_distance_by_key[key] = min(score, best_distance_by_key.get(key, score))
+        best_relevance_by_key[key] = max(relevance, best_relevance_by_key.get(key, relevance))
+        candidates.append((doc, score, channel, relevance))
 
     for doc, score in docs_with_scores:
         relevance = _document_relevance(doc, retrieval_query, active_node, vector_score=score, channel="vector")
         if score <= settings.rag_max_distance or relevance > 0:
-            candidates.append((doc, score, "vector", relevance))
+            remember_candidate(doc, score, "vector", relevance)
 
     for doc, score in _lexical_matches(settings, retrieval_query, active_node, lexical_limit):
-        candidates.append((doc, score, "lexical", -score))
+        remember_candidate(doc, score, "lexical", -score)
 
     candidates.sort(key=lambda item: (-item[3], item[1]))
     selected: List[Tuple[Document, float]] = []
@@ -602,10 +711,43 @@ def _retrieve_documents(settings: Settings, retrieval_query: str, active_node: O
             continue
         seen.add(key)
         source_counts[source] = source_counts.get(source, 0) + 1
-        selected.append((doc, score))
+        channel_set = channels_by_key.get(key, {_channel})
+        channel = "hybrid" if len(channel_set) > 1 else next(iter(channel_set))
+        evidence_doc = Document(
+            page_content=doc.page_content,
+            metadata={
+                **(doc.metadata or {}),
+                "_retrieval_channel": channel,
+                "_retrieval_distance": best_distance_by_key.get(key),
+                "_retrieval_relevance_score": best_relevance_by_key.get(key, relevance),
+                "_retrieval_match_reason": _match_reason(doc, retrieval_query, active_node, channel, best_relevance_by_key.get(key, relevance)),
+            },
+        )
+        selected.append((evidence_doc, score))
         if len(selected) >= max(settings.rag_k, 1):
             break
     return selected
+
+
+def build_rag_probe(settings: Settings, question: str, active_context: Optional[str] = None, *, limit: Optional[int] = None) -> Dict[str, Any]:
+    clean_question = question.strip()
+    if not clean_question:
+        raise AppError("empty_rag_probe", "Informe uma pergunta para testar o RAG.", 400)
+    start = time.perf_counter()
+    retrieval_query = _expand_retrieval_query(clean_question, active_context)
+    docs_with_scores = _retrieve_documents(settings, retrieval_query, active_context)
+    took_ms = round((time.perf_counter() - start) * 1000, 2)
+    evidence = _evidence_from_docs(docs_with_scores, retrieval_query, active_context)
+    if limit is not None and limit > 0:
+        evidence = evidence[: min(max(int(limit), 1), 20)]
+    return {
+        "question": clean_question,
+        "active_context": active_context,
+        "retrieval_query": retrieval_query,
+        "documents": len(docs_with_scores),
+        "took_ms": took_ms,
+        "evidence": [item.__dict__ for item in evidence],
+    }
 
 
 def warm_rag(settings: Optional[Settings] = None) -> Dict[str, Any]:
@@ -657,9 +799,7 @@ def _source_summaries(docs_with_scores) -> List[SourceSummary]:
         if source in seen:
             continue
         seen.add(source)
-        tags = metadata.get("tags", [])
-        if isinstance(tags, str):
-            tags = [tag.strip() for tag in tags.split(",") if tag.strip()]
+        tags = _coerce_tags(metadata.get("tags", []))
         summaries.append(
             SourceSummary(
                 title=metadata.get("title", "Documento sem título"),
@@ -693,6 +833,7 @@ def realtime_search_knowledge(
         "status": "ok",
         "context": _format_context(docs_with_scores, settings.realtime_max_context_chars),
         "sources": [source.__dict__ for source in _source_summaries(docs_with_scores)],
+        "evidence": [item.__dict__ for item in _evidence_from_docs(docs_with_scores, retrieval_query, active_context)],
         "retrieved_docs": len(docs_with_scores),
     }
 
@@ -987,6 +1128,7 @@ def stream_fit_analysis(
     analysis = _fit_analysis_map(answer)
     fit_score = analysis.get("fit_score")
     summary = analysis.get("shareable_summary") or analysis.get("executive_summary") or answer[:1000]
+    evidence = _evidence_from_docs(docs_with_scores, retrieval_query, None)
     usage.update(
         {
             "model": model_used,
@@ -1001,6 +1143,7 @@ def stream_fit_analysis(
                 for doc, _score in docs_with_scores
                 if (doc.metadata or {}).get("source")
             ],
+            "evidence_count": len(evidence),
         }
     )
     _get_store(settings).append(session_id, f"Análise de vaga: {job_title or 'vaga sem título'}", answer)
@@ -1013,6 +1156,7 @@ def stream_fit_analysis(
             fit_score=fit_score,
             analysis=analysis,
             sources=_source_summaries(docs_with_scores),
+            evidence=evidence,
             usage=usage,
         ),
     }
@@ -1062,6 +1206,7 @@ def _prepare_agent_run(
         clean_message=clean_message,
         retrieval_query=retrieval_query,
         docs_with_scores=docs_with_scores,
+        evidence=_evidence_from_docs(docs_with_scores, retrieval_query, active_node),
         messages=messages,
         retrieval_ms=retrieval_ms,
         total_start=total_start,
@@ -1102,6 +1247,7 @@ def _finalize_agent_result(
                 for doc, _score in prepared.docs_with_scores
                 if (doc.metadata or {}).get("source")
             ],
+            "evidence_count": len(prepared.evidence),
         }
     )
     return AgentResult(
@@ -1109,6 +1255,7 @@ def _finalize_agent_result(
         answer=answer,
         detected_language=_detect_language(prepared.clean_message),
         sources=_source_summaries(prepared.docs_with_scores),
+        evidence=prepared.evidence,
         usage=usage,
     )
 
@@ -1200,6 +1347,7 @@ def stream_answer_question(
         clean_message=clean_message,
         retrieval_query=retrieval_query,
         docs_with_scores=docs_with_scores,
+        evidence=_evidence_from_docs(docs_with_scores, retrieval_query, active_node),
         messages=messages,
         retrieval_ms=retrieval_ms,
         total_start=total_start,

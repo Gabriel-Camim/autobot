@@ -17,12 +17,13 @@ from fastapi import APIRouter, File, Form, Query, Request, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse
 from pydantic import BaseModel, Field
 
-from agent import AppError, realtime_search_knowledge
+from agent import AppError, build_rag_probe, realtime_search_knowledge
 from config import Settings, get_settings
 from events import event_summary, list_events, log_event
 from ingest import ingest, load_public_documents
 from job_scans import delete_job_scan, get_job_scan, list_job_scans
 from pgvector_store import pgvector_status, uses_pgvector
+from rag_lab import coverage_summary, last_eval_run, run_rag_eval
 from warmup import start_warmup, warmup_status
 
 
@@ -132,6 +133,12 @@ class ReindexStatusResponse(BaseModel):
     sample_error: Optional[str] = None
     github_branch: Optional[str] = None
     error: Optional[str] = None
+
+
+class RagProbeRequest(BaseModel):
+    question: str
+    active_context: Optional[str] = None
+    limit: int = Field(default=8, ge=1, le=20)
 
 
 TreeNode.model_rebuild()
@@ -777,6 +784,56 @@ def warmup_admin_status(request: Request):
     settings = _settings()
     _require_admin(request, settings)
     return warmup_status()
+
+
+@router.post("/rag/probe")
+def admin_rag_probe(payload: RagProbeRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    result = build_rag_probe(settings, payload.question, payload.active_context, limit=payload.limit)
+    log_event(
+        settings,
+        "admin_rag_probe",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={
+            "question": payload.question,
+            "active_context": payload.active_context,
+            "documents": result.get("documents"),
+            "took_ms": result.get("took_ms"),
+            "sources": [item.get("source") for item in result.get("evidence", [])],
+        },
+    )
+    return result
+
+
+@router.post("/rag/evals/run")
+def admin_rag_eval_run(request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    result = run_rag_eval(settings)
+    log_event(
+        settings,
+        "admin_rag_eval_run",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={
+            "total": result.get("total"),
+            "passed": result.get("passed"),
+            "failed": result.get("failed"),
+            "duration_ms": result.get("duration_ms"),
+        },
+    )
+    return {"run": result, "coverage": coverage_summary(settings)}
+
+
+@router.get("/rag/evals/last")
+def admin_rag_eval_last(request: Request):
+    settings = _settings()
+    _require_admin(request, settings)
+    return {"run": last_eval_run(settings), "coverage": coverage_summary(settings)}
 
 
 @router.get("/events/summary")
