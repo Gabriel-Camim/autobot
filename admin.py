@@ -15,11 +15,25 @@ from urllib.parse import urlencode, urlsplit, urlunsplit
 import httpx
 import yaml
 from fastapi import APIRouter, File, Form, Query, Request, UploadFile
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from agent import AppError, build_rag_probe, realtime_search_knowledge
 from config import Settings, get_settings
+from draft_studio import (
+    add_attachment,
+    create_draft,
+    delete_attachment,
+    delete_draft,
+    generate_draft_with_agent,
+    get_draft,
+    get_patch,
+    list_drafts,
+    propose_patch_from_draft,
+    revert_draft_step,
+    update_draft,
+    update_patch_status,
+)
 from events import event_summary, list_events, log_event
 from ingest import ingest, load_public_documents
 from job_scans import delete_job_scan, get_job_scan, list_job_scans
@@ -173,6 +187,37 @@ class SuggestionUpdateRequest(BaseModel):
     draft_markdown: Optional[str] = None
     status: Optional[str] = None
     rationale: Optional[str] = None
+
+
+class DraftCreateRequest(BaseModel):
+    title: Optional[str] = None
+    instruction: Optional[str] = None
+    suggestion_id: Optional[str] = None
+    trace_id: Optional[str] = None
+    suggested_path: Optional[str] = None
+    canonical_targets: List[str] = Field(default_factory=list)
+    draft_markdown: Optional[str] = None
+
+
+class DraftUpdateRequest(BaseModel):
+    title: Optional[str] = None
+    instruction: Optional[str] = None
+    status: Optional[str] = None
+    suggested_path: Optional[str] = None
+    draft_markdown: Optional[str] = None
+    canonical_targets: Optional[List[str]] = None
+
+
+class DraftAgentRequest(BaseModel):
+    instruction: str
+    target_paths: List[str] = Field(default_factory=list)
+
+
+class DraftActionRequest(BaseModel):
+    message: Optional[str] = None
+    target_path: Optional[str] = None
+    patch_id: Optional[str] = None
+    step: Optional[str] = None
 
 
 TreeNode.model_rebuild()
@@ -510,6 +555,10 @@ def _github_delete(settings: Settings, repo_path: str, message: str) -> CommitRe
     data = response.json()
     commit = data.get("commit") or {}
     return CommitResponse(ok=True, path=repo_path, commit_sha=commit.get("sha"), html_url=commit.get("html_url"))
+
+
+def _admin_sse(event: str, data: Dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
 @router.get("/session", response_model=AdminSessionResponse)
@@ -1070,6 +1119,228 @@ def admin_knowledge_suggestion_create_eval_case(suggestion_id: str, payload: Sug
     update_knowledge_suggestion_status(settings, suggestion_id, "converted_to_eval", {"commit_sha": commit.commit_sha, "eval_case": case, "converted_by": user.login})
     log_event(settings, "admin_knowledge_suggestion_eval_case", request=request, session_id=user.login, actor_type="admin", payload={"suggestion_id": suggestion_id, "case_id": case["id"], "commit_sha": commit.commit_sha})
     return {"ok": True, "case": case, "commit": commit}
+
+
+@router.get("/knowledge/drafts")
+def admin_knowledge_drafts(
+    request: Request,
+    status: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    settings = _settings()
+    _require_admin(request, settings)
+    return {"drafts": list_drafts(settings, status=status, limit=limit)}
+
+
+@router.post("/knowledge/drafts")
+def admin_knowledge_draft_create(payload: DraftCreateRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    draft = create_draft(settings, payload.model_dump(exclude_none=True))
+    if draft.get("source_suggestion_id"):
+        update_knowledge_suggestion_details(
+            settings,
+            str(draft["source_suggestion_id"]),
+            {"status": "draft_opened", "payload_update": {"draft_id": draft["id"]}},
+        )
+    log_event(
+        settings,
+        "admin_draft_create",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"draft_id": draft["id"], "suggestion_id": draft.get("source_suggestion_id")},
+    )
+    return draft
+
+
+@router.get("/knowledge/drafts/{draft_id}")
+def admin_knowledge_draft_detail(draft_id: str, request: Request):
+    settings = _settings()
+    _require_admin(request, settings)
+    draft = get_draft(settings, draft_id, include_related=True)
+    if not draft:
+        raise AppError("draft_not_found", "Draft nÃ£o encontrado.", 404)
+    return draft
+
+
+@router.put("/knowledge/drafts/{draft_id}")
+def admin_knowledge_draft_update(draft_id: str, payload: DraftUpdateRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    updates = payload.model_dump(exclude_unset=True)
+    if updates.get("draft_markdown"):
+        _validate_markdown_frontmatter(updates["draft_markdown"])
+    draft = update_draft(settings, draft_id, updates)
+    if not draft:
+        raise AppError("draft_not_found", "Draft nÃ£o encontrado.", 404)
+    log_event(settings, "admin_draft_update", request=request, session_id=user.login, actor_type="admin", payload={"draft_id": draft_id})
+    return draft
+
+
+@router.post("/knowledge/drafts/{draft_id}/attachments")
+async def admin_knowledge_draft_attachments(draft_id: str, request: Request, files: List[UploadFile] = File(...)):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    saved = []
+    for upload in files[:5]:
+        data = await upload.read()
+        saved.append(
+            add_attachment(
+                settings,
+                draft_id,
+                filename=upload.filename or "attachment.txt",
+                content_type=upload.content_type or "application/octet-stream",
+                data=data,
+            )
+        )
+    log_event(
+        settings,
+        "admin_draft_attachment",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"draft_id": draft_id, "count": len(saved)},
+    )
+    return {"attachments": saved, "draft": get_draft(settings, draft_id, include_related=True)}
+
+
+@router.delete("/knowledge/drafts/{draft_id}/attachments/{attachment_id}")
+def admin_knowledge_draft_attachment_delete(draft_id: str, attachment_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    if not delete_attachment(settings, draft_id, attachment_id):
+        raise AppError("attachment_not_found", "Anexo nÃ£o encontrado.", 404)
+    log_event(settings, "admin_draft_attachment_delete", request=request, session_id=user.login, actor_type="admin", payload={"draft_id": draft_id, "attachment_id": attachment_id})
+    return {"ok": True, "draft": get_draft(settings, draft_id, include_related=True)}
+
+
+@router.post("/knowledge/drafts/{draft_id}/agent/stream")
+def admin_knowledge_draft_agent_stream(draft_id: str, payload: DraftAgentRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+
+    def generate():
+        try:
+            yield _admin_sse("stage", {"id": "received", "label": "InstruÃ§Ã£o recebida", "status": "done"})
+            yield _admin_sse("stage", {"id": "retrieval", "label": "Recuperando contexto no RAG", "status": "active"})
+            result = generate_draft_with_agent(
+                settings,
+                draft_id,
+                instruction=payload.instruction,
+                target_paths=payload.target_paths,
+            )
+            yield _admin_sse("stage", {"id": "draft", "label": "Draft e patches preparados", "status": "done"})
+            yield _admin_sse(
+                "done",
+                {
+                    "draft": result["draft"],
+                    "run": result["run"],
+                    "patches": result["patches"],
+                    "fallback": result["fallback"],
+                },
+            )
+            log_event(
+                settings,
+                "admin_draft_agent",
+                request=request,
+                session_id=user.login,
+                actor_type="admin",
+                payload={"draft_id": draft_id, "fallback": result["fallback"]},
+            )
+        except AppError as exc:
+            yield _admin_sse("error", {"code": exc.code, "message": exc.message})
+        except Exception as exc:
+            yield _admin_sse("error", {"code": "draft_agent_failed", "message": _sanitize_error(exc)})
+
+    return StreamingResponse(generate(), media_type="text/event-stream")
+
+
+@router.post("/knowledge/drafts/{draft_id}/commit-draft")
+def admin_knowledge_draft_commit(draft_id: str, payload: DraftActionRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    draft = get_draft(settings, draft_id, include_related=True)
+    if not draft:
+        raise AppError("draft_not_found", "Draft nÃ£o encontrado.", 404)
+    repo_path = draft.get("suggested_path") or f"knowledge/_drafts/{draft_id}.md"
+    if not str(repo_path).startswith("knowledge/_drafts/"):
+        raise AppError("invalid_draft_path", "Draft precisa ser salvo dentro de knowledge/_drafts/.", 422)
+    _resolve_content_path(repo_path, settings, require_markdown=True)
+    _validate_markdown_frontmatter(draft["draft_markdown"])
+    commit = _github_put(settings, repo_path, draft["draft_markdown"], payload.message or f"admin: commit draft {repo_path}")
+    updated = update_draft(settings, draft_id, {"status": "draft_committed", "git_path": repo_path, "git_commit_sha": commit.commit_sha})
+    log_event(settings, "admin_draft_commit", request=request, session_id=user.login, actor_type="admin", payload={"draft_id": draft_id, "path": repo_path, "commit_sha": commit.commit_sha})
+    return {"ok": True, "draft": updated, "commit": commit}
+
+
+@router.post("/knowledge/drafts/{draft_id}/propose-patch")
+def admin_knowledge_draft_propose_patch(draft_id: str, payload: DraftActionRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    result = propose_patch_from_draft(settings, draft_id, target_path=payload.target_path)
+    log_event(settings, "admin_draft_patch_propose", request=request, session_id=user.login, actor_type="admin", payload={"draft_id": draft_id, "patch_id": result.get("patch", {}).get("id")})
+    return result
+
+
+@router.post("/knowledge/drafts/{draft_id}/apply-patch")
+def admin_knowledge_draft_apply_patch(draft_id: str, payload: DraftActionRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    draft = get_draft(settings, draft_id, include_related=True)
+    if not draft:
+        raise AppError("draft_not_found", "Draft nÃ£o encontrado.", 404)
+    patch_id = payload.patch_id or next((patch.get("id") for patch in draft.get("patches") or [] if patch.get("status") == "proposed"), None)
+    if not patch_id:
+        raise AppError("patch_not_found", "Nenhum patch proposto para aplicar.", 404)
+    patch = get_patch(settings, draft_id, patch_id)
+    if not patch:
+        raise AppError("patch_not_found", "Patch nÃ£o encontrado.", 404)
+    repo_path, _target = _resolve_content_path(patch["target_path"], settings, require_markdown=True)
+    _validate_markdown_frontmatter(patch["proposed_content"])
+    commit = _github_put(settings, repo_path, patch["proposed_content"], payload.message or f"admin: apply draft patch {repo_path}")
+    update_patch_status(settings, draft_id, patch_id, "applied", commit.commit_sha)
+    updated = update_draft(settings, draft_id, {"status": "merged"})
+    log_event(settings, "admin_draft_patch_apply", request=request, session_id=user.login, actor_type="admin", payload={"draft_id": draft_id, "patch_id": patch_id, "path": repo_path, "commit_sha": commit.commit_sha})
+    return {"ok": True, "draft": updated, "patch": get_patch(settings, draft_id, patch_id), "commit": commit}
+
+
+@router.post("/knowledge/drafts/{draft_id}/revert-step")
+def admin_knowledge_draft_revert_step(draft_id: str, payload: DraftActionRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    draft = get_draft(settings, draft_id, include_related=True)
+    if not draft:
+        raise AppError("draft_not_found", "Draft nÃ£o encontrado.", 404)
+    commit = None
+    step = payload.step or "review"
+    if step in {"review", "delete_committed_draft"} and draft.get("git_path"):
+        try:
+            commit = _github_delete(settings, draft["git_path"], payload.message or f"admin: remove draft {draft['git_path']}")
+        except AppError as exc:
+            if exc.code != "file_not_found":
+                raise
+    updated = revert_draft_step(settings, draft_id, "review" if step == "delete_committed_draft" else step)
+    log_event(settings, "admin_draft_revert", request=request, session_id=user.login, actor_type="admin", payload={"draft_id": draft_id, "step": step})
+    return {"ok": True, "draft": updated, "commit": commit}
+
+
+@router.delete("/knowledge/drafts/{draft_id}")
+def admin_knowledge_draft_delete(draft_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    draft = get_draft(settings, draft_id, include_related=True)
+    if not draft:
+        raise AppError("draft_not_found", "Draft nÃ£o encontrado.", 404)
+    if draft.get("git_path"):
+        try:
+            _github_delete(settings, draft["git_path"], f"admin: delete draft {draft['git_path']}")
+        except AppError as exc:
+            if exc.code != "file_not_found":
+                raise
+    deleted = delete_draft(settings, draft_id)
+    log_event(settings, "admin_draft_delete", request=request, session_id=user.login, actor_type="admin", payload={"draft_id": draft_id})
+    return {"ok": deleted}
 
 
 @router.get("/events/summary")

@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from admin import _current_admin, router as admin_router
 from agent import AppError, AgentResult, answer_question, stream_answer_question, stream_fit_analysis
 from config import get_settings
+from draft_studio import draft_studio_storage_status
 from events import event_storage_status, log_event
 from job_scans import create_job_scan, fail_job_scan, finish_job_scan, job_scan_storage_status
 from pgvector_store import pgvector_status, uses_pgvector
@@ -337,6 +338,8 @@ def health():
             "rag_quality",
             "rag_feedback",
             "knowledge_suggestions",
+            "draft_studio",
+            "draft_agent",
         ],
         "cors_local_enabled": settings.allow_local_cors,
         "frontend_origins": settings.frontend_origin_list,
@@ -350,6 +353,7 @@ def health():
         "events": event_storage_status(settings),
         "job_scans": job_scan_storage_status(settings),
         "rag_quality": rag_quality_storage_status(settings),
+        "draft_studio": draft_studio_storage_status(settings),
         "rag_rerank_enabled": settings.rag_rerank_enabled,
         "rag_rerank_provider": settings.rag_rerank_provider,
         "rag_feedback_enabled": settings.rag_feedback_enabled,

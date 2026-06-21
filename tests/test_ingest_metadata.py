@@ -43,6 +43,22 @@ Conteudo estatico para o botao play, fora do RAG.
 """,
         encoding="utf-8",
     )
+    drafts = knowledge / "_drafts"
+    drafts.mkdir()
+    (drafts / "nao-indexar.md").write_text(
+        """---
+title: Draft Privado
+category: drafts
+tags: [curadoria]
+visibility: public
+priority: 1
+updated_at: 2026-06-21
+summary: Mesmo publico no frontmatter, draft nao entra no RAG.
+---
+Conteudo em revisao.
+""",
+        encoding="utf-8",
+    )
 
     settings = Settings(
         _env_file=None,
