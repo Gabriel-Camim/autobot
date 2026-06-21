@@ -4,7 +4,7 @@ category: skills
 tags: [stack, python, react, fastapi, langchain]
 visibility: public
 priority: 1
-updated_at: 2026-06-09
+updated_at: 2026-06-21
 summary: Stack técnica principal usada por Gabriel em projetos de dados, IA, automações e sistemas.
 ---
 
@@ -16,7 +16,7 @@ Stack planejada para este próprio portfólio:
 - FastAPI.
 - LangChain.
 - ChromaDB local.
-- OpenAI API com GPT-4o.
+- OpenAI API.
 - Whisper API para transcricao.
 - OpenAI TTS para voz.
 - React com Vite.
