@@ -711,7 +711,7 @@ def _candidate_payload(
     return {
         "id": key,
         "source": str(metadata.get("source", "")),
-        "title": str(metadata.get("title", "Documento sem tÃ­tulo")),
+        "title": str(metadata.get("title", "Documento sem título")),
         "category": str(metadata.get("category", "geral")),
         "summary": str(metadata.get("summary", "")),
         "tags": _coerce_tags(metadata.get("tags", [])),
@@ -1172,7 +1172,7 @@ def _extract_fit_score(answer: str) -> Optional[int]:
 
 def _extract_section(answer: str, title: str) -> str:
     pattern = re.compile(
-        rf"{re.escape(title)}\s*:\s*(.*?)(?=\n[A-ZÁÉÍÓÚÂÊÔÃÕÇ][^\n:]+:\s*|\Z)",
+        rf"{re.escape(title)}\s*:\s*(.*?)(?=\n[A-ZÀ-ÖØ-Þ][^\n:]+:\s*|\Z)",
         flags=re.IGNORECASE | re.DOTALL,
     )
     match = pattern.search(answer)

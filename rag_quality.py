@@ -496,12 +496,23 @@ def list_rag_feedback(settings: Settings, *, status: Optional[str] = None, limit
     if status:
         query += f" WHERE status = {marker}"
         params.append(status)
+    else:
+        query += " WHERE status != " + marker
+        params.append("deleted")
     query += f" ORDER BY created_at DESC LIMIT {marker}"
     params.append(limit)
     with _lock:
         with _connect(settings) as conn:
             rows = conn.execute(query, params).fetchall()
     return [_feedback_from_row(row) for row in rows]
+
+
+def get_rag_feedback(settings: Settings, feedback_id: str) -> Optional[Dict[str, Any]]:
+    marker = _placeholder(settings)
+    with _lock:
+        with _connect(settings) as conn:
+            row = conn.execute(f"SELECT * FROM rag_feedback WHERE id = {marker}", (feedback_id,)).fetchone()
+    return _feedback_from_row(row) if row else None
 
 
 def triage_rag_feedback(settings: Settings, feedback_id: str, status: str, triage: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -514,6 +525,14 @@ def triage_rag_feedback(settings: Settings, feedback_id: str, status: str, triag
             )
             row = conn.execute(f"SELECT * FROM rag_feedback WHERE id = {marker}", (feedback_id,)).fetchone()
     return _feedback_from_row(row) if row else None
+
+
+def archive_rag_feedback(settings: Settings, feedback_id: str, *, admin: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    feedback = get_rag_feedback(settings, feedback_id)
+    triage = feedback.get("triage") if feedback else {}
+    if isinstance(triage, dict):
+        triage = {**triage, "archived_by": admin, "archived_at": _now()}
+    return triage_rag_feedback(settings, feedback_id, "deleted", triage if isinstance(triage, dict) else {})
 
 
 def create_knowledge_suggestion(settings: Settings, suggestion: Dict[str, Any]) -> Dict[str, Any]:

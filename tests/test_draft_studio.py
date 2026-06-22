@@ -4,7 +4,19 @@ import pytest
 
 from agent import AppError
 from config import Settings
-from draft_studio import add_attachment, create_draft, get_draft, list_drafts
+from draft_studio import (
+    add_attachment,
+    add_targets_to_case,
+    create_curation_case,
+    create_draft,
+    get_curation_case,
+    get_draft,
+    ignore_case_draft,
+    list_canonical_documents,
+    list_drafts,
+    record_case_reindex,
+    resolve_curation_case,
+)
 
 
 def make_settings(tmp_path: Path) -> Settings:
@@ -72,3 +84,80 @@ def test_attachment_rejects_unsupported_file(tmp_path: Path):
         )
 
     assert exc.value.code == "unsupported_attachment"
+
+
+def write_public_md(settings: Settings, relative: str, title: str = "Doc") -> Path:
+    path = settings.resolved_knowledge_dir / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        f"""---
+title: {title}
+category: teste
+tags:
+  - teste
+visibility: public
+priority: 2
+updated_at: '2026-06-22'
+summary: Documento de teste.
+---
+
+# {title}
+
+Conteúdo público.
+""",
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_curation_case_creates_child_drafts_for_targets(tmp_path: Path):
+    settings = make_settings(tmp_path)
+    write_public_md(settings, "skills/hard-skills.md", "Hard Skills")
+    write_public_md(settings, "projetos/autobot/overview.md", "Autobot")
+
+    case = create_curation_case(
+        settings,
+        {
+            "title": "Atualizar stack",
+            "instruction": "Refinar stack real.",
+            "target_paths": ["knowledge/skills/hard-skills.md", "knowledge/projetos/autobot/overview.md"],
+        },
+    )
+
+    hydrated = get_curation_case(settings, case["id"])
+    assert hydrated["status"] == "targets_selected"
+    assert len(hydrated["drafts"]) == 2
+    assert {draft["target_path"] for draft in hydrated["drafts"]} == {
+        "knowledge/skills/hard-skills.md",
+        "knowledge/projetos/autobot/overview.md",
+    }
+
+
+def test_canonical_documents_excludes_drafts(tmp_path: Path):
+    settings = make_settings(tmp_path)
+    write_public_md(settings, "skills/hard-skills.md", "Hard Skills")
+    write_public_md(settings, "_drafts/rascunho.md", "Draft")
+
+    docs = list_canonical_documents(settings)
+
+    assert [doc["path"] for doc in docs] == ["knowledge/skills/hard-skills.md"]
+
+
+def test_case_resolution_requires_reindex_after_docs_done(tmp_path: Path):
+    settings = make_settings(tmp_path)
+    write_public_md(settings, "skills/hard-skills.md", "Hard Skills")
+    case = create_curation_case(
+        settings,
+        {"title": "Caso", "instruction": "Teste.", "target_paths": ["knowledge/skills/hard-skills.md"]},
+    )
+    draft_id = case["drafts"][0]["id"]
+    ignore_case_draft(settings, case["id"], draft_id)
+
+    with pytest.raises(AppError) as exc:
+        resolve_curation_case(settings, case["id"])
+    assert exc.value.code == "curation_case_not_reindexed"
+
+    record_case_reindex(settings, case["id"], {"state": "success", "document_count": 1, "chunk_count": 1})
+    resolved = resolve_curation_case(settings, case["id"])
+
+    assert resolved["status"] == "resolved"

@@ -18,7 +18,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from agent import AppError, _build_llm, _response_content_to_text, build_rag_probe, sanitize_answer_text
 from config import Settings
-from rag_quality import get_knowledge_suggestion, get_rag_trace
+from rag_quality import get_knowledge_suggestion, get_rag_feedback, get_rag_trace, triage_rag_feedback
 
 
 _lock = threading.Lock()
@@ -27,6 +27,8 @@ DRAFT_ROOT = "knowledge/_drafts"
 MAX_ATTACHMENTS_PER_DRAFT = 5
 MAX_ATTACHMENT_MB = 10
 ALLOWED_ATTACHMENT_SUFFIXES = {".md", ".txt", ".json", ".pdf", ".docx"}
+CASE_RESOLVED_STATUSES = {"resolved", "archived", "deleted"}
+DOC_DONE_STATUSES = {"merged", "ignored"}
 
 
 def _now() -> str:
@@ -79,6 +81,23 @@ def _ensure_schema(conn, *, postgres: bool) -> None:
     timestamp = "TIMESTAMPTZ" if postgres else "TEXT"
     conn.execute(
         f"""
+        CREATE TABLE IF NOT EXISTS curation_cases (
+            id TEXT PRIMARY KEY,
+            created_at {timestamp} NOT NULL,
+            updated_at {timestamp} NOT NULL,
+            status TEXT NOT NULL,
+            title TEXT NOT NULL,
+            instruction TEXT,
+            source_kind TEXT NOT NULL,
+            source_feedback_id TEXT,
+            source_trace_id TEXT,
+            validation_json TEXT NOT NULL,
+            payload_json TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        f"""
         CREATE TABLE IF NOT EXISTS knowledge_drafts (
             id TEXT PRIMARY KEY,
             created_at {timestamp} NOT NULL,
@@ -101,6 +120,12 @@ def _ensure_schema(conn, *, postgres: bool) -> None:
         )
         """
     )
+    _add_column_if_missing(conn, "knowledge_drafts", "case_id", "TEXT", postgres=postgres)
+    _add_column_if_missing(conn, "knowledge_drafts", "source_feedback_id", "TEXT", postgres=postgres)
+    _add_column_if_missing(conn, "knowledge_drafts", "target_path", "TEXT", postgres=postgres)
+    _add_column_if_missing(conn, "knowledge_drafts", "decision", "TEXT", postgres=postgres)
+    _add_column_if_missing(conn, "knowledge_drafts", "completed_at", timestamp, postgres=postgres)
+    _add_column_if_missing(conn, "knowledge_drafts", "validation_json", "TEXT", postgres=postgres)
     conn.execute(
         f"""
         CREATE TABLE IF NOT EXISTS draft_runs (
@@ -149,14 +174,81 @@ def _ensure_schema(conn, *, postgres: bool) -> None:
         """
     )
     for statement in (
+        "CREATE INDEX IF NOT EXISTS idx_curation_cases_status ON curation_cases(status)",
+        "CREATE INDEX IF NOT EXISTS idx_curation_cases_feedback ON curation_cases(source_feedback_id)",
+        "CREATE INDEX IF NOT EXISTS idx_curation_cases_updated_at ON curation_cases(updated_at)",
         "CREATE INDEX IF NOT EXISTS idx_knowledge_drafts_status ON knowledge_drafts(status)",
         "CREATE INDEX IF NOT EXISTS idx_knowledge_drafts_created_at ON knowledge_drafts(created_at)",
         "CREATE INDEX IF NOT EXISTS idx_knowledge_drafts_suggestion ON knowledge_drafts(source_suggestion_id)",
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_drafts_case ON knowledge_drafts(case_id)",
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_drafts_feedback ON knowledge_drafts(source_feedback_id)",
         "CREATE INDEX IF NOT EXISTS idx_draft_runs_draft_id ON draft_runs(draft_id)",
         "CREATE INDEX IF NOT EXISTS idx_draft_attachments_draft_id ON draft_attachments(draft_id)",
         "CREATE INDEX IF NOT EXISTS idx_draft_patches_draft_id ON draft_patches(draft_id)",
     ):
         conn.execute(statement)
+    _backfill_curation_cases(conn, postgres=postgres)
+
+
+def _table_columns(conn, table: str, *, postgres: bool) -> set[str]:
+    if postgres:
+        rows = conn.execute(
+            """
+            SELECT column_name FROM information_schema.columns
+            WHERE table_name = %s AND table_schema = current_schema()
+            """,
+            (table,),
+        ).fetchall()
+        return {row["column_name"] if isinstance(row, dict) else row[0] for row in rows}
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    return {row["name"] if isinstance(row, dict) else row[1] for row in rows}
+
+
+def _add_column_if_missing(conn, table: str, column: str, definition: str, *, postgres: bool) -> None:
+    if column in _table_columns(conn, table, postgres=postgres):
+        return
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+
+
+def _backfill_curation_cases(conn, *, postgres: bool) -> None:
+    marker = "%s" if postgres else "?"
+    rows = conn.execute("SELECT * FROM knowledge_drafts WHERE case_id IS NULL OR case_id = ''").fetchall()
+    for row in rows:
+        if not isinstance(row, dict):
+            row = dict(row)
+        case_id = str(uuid4())
+        now = _now()
+        title = row.get("title") or "Caso de curadoria"
+        source_kind = "suggestion" if row.get("source_suggestion_id") else "manual"
+        source_feedback_id = row.get("source_feedback_id")
+        source_trace_id = row.get("source_trace_id")
+        validation = {"backfilled": True}
+        payload = {"backfilled_from_draft": row.get("id")}
+        conn.execute(
+            f"""
+            INSERT INTO curation_cases
+            (id, created_at, updated_at, status, title, instruction, source_kind, source_feedback_id,
+             source_trace_id, validation_json, payload_json)
+            VALUES ({",".join([marker] * 11)})
+            """,
+            (
+                case_id,
+                now,
+                now,
+                row.get("status") or "review",
+                title,
+                row.get("instruction"),
+                source_kind,
+                source_feedback_id,
+                source_trace_id,
+                _safe_json(validation),
+                _safe_json(payload),
+            ),
+        )
+        conn.execute(
+            f"UPDATE knowledge_drafts SET case_id = {marker}, decision = COALESCE(decision, {marker}), validation_json = COALESCE(validation_json, {marker}) WHERE id = {marker}",
+            (case_id, "edit", _safe_json({}), row.get("id")),
+        )
 
 
 def init_draft_studio_db(settings: Settings) -> None:
@@ -263,18 +355,85 @@ def _draft_from_row(row: Any) -> Optional[Dict[str, Any]]:
         "title": row.get("title"),
         "instruction": row.get("instruction"),
         "source_suggestion_id": row.get("source_suggestion_id"),
+        "source_feedback_id": row.get("source_feedback_id"),
         "source_trace_id": row.get("source_trace_id"),
+        "case_id": row.get("case_id"),
         "suggested_path": row.get("suggested_path"),
         "git_path": row.get("git_path"),
         "git_commit_sha": row.get("git_commit_sha"),
+        "target_path": row.get("target_path"),
+        "decision": row.get("decision") or "edit",
+        "completed_at": str(row.get("completed_at")) if row.get("completed_at") else None,
         "canonical_targets": _load_json(row.get("canonical_targets_json"), []),
         "draft_markdown": row.get("draft_markdown"),
         "proposed_markdown": row.get("proposed_markdown"),
         "evidence": _load_json(row.get("evidence_json"), []),
         "conflict_report": _load_json(row.get("conflict_report_json"), []),
         "eval_suggestions": _load_json(row.get("eval_suggestions_json"), []),
+        "validation": _load_json(row.get("validation_json"), {}),
         "payload": _load_json(row.get("payload_json"), {}),
     }
+
+
+def _case_from_row(row: Any, drafts: Optional[List[Dict[str, Any]]] = None) -> Optional[Dict[str, Any]]:
+    if not row:
+        return None
+    if not isinstance(row, dict):
+        row = dict(row)
+    case = {
+        "id": row.get("id"),
+        "created_at": str(row.get("created_at")),
+        "updated_at": str(row.get("updated_at")),
+        "status": row.get("status"),
+        "title": row.get("title"),
+        "instruction": row.get("instruction"),
+        "source_kind": row.get("source_kind"),
+        "source_feedback_id": row.get("source_feedback_id"),
+        "source_trace_id": row.get("source_trace_id"),
+        "validation": _load_json(row.get("validation_json"), {}),
+        "payload": _load_json(row.get("payload_json"), {}),
+    }
+    if drafts is not None:
+        case["drafts"] = drafts
+        case["timeline"] = _case_timeline(case, drafts)
+        case["next_action"] = _case_next_action(case, drafts)
+    return case
+
+
+def _case_timeline(case: Dict[str, Any], drafts: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    validation = case.get("validation") or {}
+    has_targets = bool(drafts)
+    has_ai = any((draft.get("status") in {"ai_generated", "draft_committed", "patch_proposed", "merged"}) for draft in drafts)
+    has_draft_git = any(draft.get("git_path") for draft in drafts)
+    has_patch = any((draft.get("patches") or []) for draft in drafts)
+    docs_done = has_targets and all(draft.get("status") in DOC_DONE_STATUSES for draft in drafts)
+    reindexed = (validation.get("reindex") or {}).get("state") == "success"
+    eval_state = (validation.get("eval") or {}).get("state")
+    steps = [
+        ("signal", "Sinal recebido", True),
+        ("targets", "Documentos definidos", has_targets),
+        ("draft", "IA gerou rascunho", has_ai),
+        ("draft_git", "Draft privado salvo", has_draft_git),
+        ("patch", "Diff criado", has_patch),
+        ("merge", "Documentos concluídos", docs_done),
+        ("reindex", "RAG reindexado", reindexed),
+        ("eval", "Eval registrado", bool(eval_state)),
+    ]
+    return [{"id": key, "label": label, "done": bool(done)} for key, label, done in steps]
+
+
+def _case_next_action(case: Dict[str, Any], drafts: List[Dict[str, Any]]) -> str:
+    validation = case.get("validation") or {}
+    if not drafts:
+        return "Selecione os Markdown que precisam de curadoria."
+    pending = [draft for draft in drafts if draft.get("status") not in DOC_DONE_STATUSES]
+    if pending:
+        return "Revise cada documento: gere com IA, salve o draft, crie o diff e aplique ou ignore."
+    if (validation.get("reindex") or {}).get("state") != "success":
+        return "Reindexe o RAG para publicar a mudança no índice."
+    if case.get("status") != "resolved":
+        return "Caso validado por reindex. Você já pode resolver o feedback."
+    return "Caso resolvido."
 
 
 def _attachment_from_row(row: Any) -> Dict[str, Any]:
@@ -350,16 +509,22 @@ def create_draft(settings: Settings, payload: Dict[str, Any]) -> Dict[str, Any]:
         "title": title,
         "instruction": instruction,
         "source_suggestion_id": suggestion_id,
+        "source_feedback_id": payload.get("source_feedback_id"),
         "source_trace_id": trace_id,
+        "case_id": payload.get("case_id"),
         "suggested_path": suggested_path,
         "git_path": None,
         "git_commit_sha": None,
+        "target_path": payload.get("target_path"),
+        "decision": payload.get("decision") or "edit",
+        "completed_at": None,
         "canonical_targets": payload.get("canonical_targets") or [],
         "draft_markdown": payload.get("draft_markdown") or _initial_markdown(title, instruction, suggestion),
         "proposed_markdown": None,
         "evidence": [],
         "conflict_report": [],
         "eval_suggestions": [],
+        "validation": {},
         "payload": {"suggestion": suggestion, "trace": trace},
     }
     marker = _placeholder(settings)
@@ -371,16 +536,22 @@ def create_draft(settings: Settings, payload: Dict[str, Any]) -> Dict[str, Any]:
         draft["title"],
         draft["instruction"],
         draft["source_suggestion_id"],
+        draft["source_feedback_id"],
         draft["source_trace_id"],
+        draft["case_id"],
         draft["suggested_path"],
         draft["git_path"],
         draft["git_commit_sha"],
+        draft["target_path"],
+        draft["decision"],
+        draft["completed_at"],
         _safe_json(draft["canonical_targets"]),
         draft["draft_markdown"],
         draft["proposed_markdown"],
         _safe_json(draft["evidence"]),
         _safe_json(draft["conflict_report"]),
         _safe_json(draft["eval_suggestions"]),
+        _safe_json(draft["validation"]),
         _safe_json(draft["payload"]),
     )
     with _lock:
@@ -388,10 +559,11 @@ def create_draft(settings: Settings, payload: Dict[str, Any]) -> Dict[str, Any]:
             conn.execute(
                 f"""
                 INSERT INTO knowledge_drafts
-                (id, created_at, updated_at, status, title, instruction, source_suggestion_id, source_trace_id,
-                 suggested_path, git_path, git_commit_sha, canonical_targets_json, draft_markdown, proposed_markdown,
-                 evidence_json, conflict_report_json, eval_suggestions_json, payload_json)
-                VALUES ({",".join([marker] * 18)})
+                (id, created_at, updated_at, status, title, instruction, source_suggestion_id, source_feedback_id,
+                 source_trace_id, case_id, suggested_path, git_path, git_commit_sha, target_path, decision, completed_at,
+                 canonical_targets_json, draft_markdown, proposed_markdown, evidence_json, conflict_report_json,
+                 eval_suggestions_json, validation_json, payload_json)
+                VALUES ({",".join([marker] * 24)})
                 """,
                 row,
             )
@@ -445,9 +617,15 @@ def update_draft(settings: Settings, draft_id: str, updates: Dict[str, Any]) -> 
         "status": "status",
         "title": "title",
         "instruction": "instruction",
+        "source_feedback_id": "source_feedback_id",
+        "source_trace_id": "source_trace_id",
+        "case_id": "case_id",
         "suggested_path": "suggested_path",
         "git_path": "git_path",
         "git_commit_sha": "git_commit_sha",
+        "target_path": "target_path",
+        "decision": "decision",
+        "completed_at": "completed_at",
         "draft_markdown": "draft_markdown",
         "proposed_markdown": "proposed_markdown",
     }
@@ -457,7 +635,7 @@ def update_draft(settings: Settings, draft_id: str, updates: Dict[str, Any]) -> 
     for key, column in allowed.items():
         if key in updates:
             value = updates[key]
-            if key in {"suggested_path", "git_path"} and value:
+            if key in {"suggested_path", "git_path", "target_path"} and value:
                 value = _normalize_repo_path(str(value))
             fields.append(f"{column} = {marker}")
             params.append(value)
@@ -466,6 +644,7 @@ def update_draft(settings: Settings, draft_id: str, updates: Dict[str, Any]) -> 
         "evidence": "evidence_json",
         "conflict_report": "conflict_report_json",
         "eval_suggestions": "eval_suggestions_json",
+        "validation": "validation_json",
         "payload": "payload_json",
     }
     for key, column in json_fields.items():
@@ -477,6 +656,346 @@ def update_draft(settings: Settings, draft_id: str, updates: Dict[str, Any]) -> 
         with _connect(settings) as conn:
             conn.execute(f"UPDATE knowledge_drafts SET {', '.join(fields)} WHERE id = {marker}", params)
     return get_draft(settings, draft_id, include_related=True)
+
+
+def _drafts_for_case(settings: Settings, case_id: str, *, include_related: bool = True) -> List[Dict[str, Any]]:
+    marker = _placeholder(settings)
+    with _lock:
+        with _connect(settings) as conn:
+            rows = conn.execute(
+                f"SELECT * FROM knowledge_drafts WHERE case_id = {marker} ORDER BY created_at ASC",
+                (case_id,),
+            ).fetchall()
+    drafts = [item for item in (_draft_from_row(row) for row in rows) if item]
+    if not include_related:
+        return drafts
+    return [get_draft(settings, draft["id"], include_related=True) or draft for draft in drafts]
+
+
+def _case_payload(settings: Settings, case_id: str, *, include_drafts: bool = True) -> Optional[Dict[str, Any]]:
+    marker = _placeholder(settings)
+    with _lock:
+        with _connect(settings) as conn:
+            row = conn.execute(f"SELECT * FROM curation_cases WHERE id = {marker}", (case_id,)).fetchone()
+    if not row:
+        return None
+    drafts = _drafts_for_case(settings, case_id, include_related=True) if include_drafts else None
+    return _case_from_row(row, drafts)
+
+
+def list_curation_cases(settings: Settings, *, status: Optional[str] = None, limit: int = 100) -> List[Dict[str, Any]]:
+    limit = max(1, min(limit, 500))
+    marker = _placeholder(settings)
+    params: List[Any] = []
+    query = "SELECT * FROM curation_cases"
+    if status:
+        query += f" WHERE status = {marker}"
+        params.append(status)
+    else:
+        query += " WHERE status != " + marker
+        params.append("deleted")
+    query += f" ORDER BY updated_at DESC LIMIT {marker}"
+    params.append(limit)
+    with _lock:
+        with _connect(settings) as conn:
+            rows = conn.execute(query, params).fetchall()
+    cases = []
+    for row in rows:
+        case = _case_from_row(row, None)
+        if case:
+            drafts = _drafts_for_case(settings, case["id"], include_related=False)
+            case["drafts"] = drafts
+            case["timeline"] = _case_timeline(case, drafts)
+            case["next_action"] = _case_next_action(case, drafts)
+            cases.append(case)
+    return cases
+
+
+def get_curation_case(settings: Settings, case_id: str) -> Optional[Dict[str, Any]]:
+    return _case_payload(settings, case_id, include_drafts=True)
+
+
+def active_case_for_feedback(settings: Settings, feedback_id: str) -> Optional[Dict[str, Any]]:
+    marker = _placeholder(settings)
+    with _lock:
+        with _connect(settings) as conn:
+            placeholders = ",".join([marker] * len(CASE_RESOLVED_STATUSES))
+            row = conn.execute(
+                f"""
+                SELECT * FROM curation_cases
+                WHERE source_feedback_id = {marker} AND status NOT IN ({placeholders})
+                ORDER BY updated_at DESC LIMIT 1
+                """,
+                (feedback_id, *CASE_RESOLVED_STATUSES),
+            ).fetchone()
+    if not row:
+        return None
+    case = _case_from_row(row, None)
+    return get_curation_case(settings, case["id"]) if case else None
+
+
+def _update_case(settings: Settings, case_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    marker = _placeholder(settings)
+    fields = [f"updated_at = {marker}"]
+    params: List[Any] = [_now()]
+    for key, column in {
+        "status": "status",
+        "title": "title",
+        "instruction": "instruction",
+        "source_kind": "source_kind",
+        "source_feedback_id": "source_feedback_id",
+        "source_trace_id": "source_trace_id",
+    }.items():
+        if key in updates:
+            fields.append(f"{column} = {marker}")
+            params.append(updates[key])
+    for key, column in {"validation": "validation_json", "payload": "payload_json"}.items():
+        if key in updates:
+            fields.append(f"{column} = {marker}")
+            params.append(_safe_json(updates[key]))
+    params.append(case_id)
+    with _lock:
+        with _connect(settings) as conn:
+            conn.execute(f"UPDATE curation_cases SET {', '.join(fields)} WHERE id = {marker}", params)
+    return get_curation_case(settings, case_id)
+
+
+def _refresh_case_status(settings: Settings, case_id: str) -> Optional[Dict[str, Any]]:
+    case = get_curation_case(settings, case_id)
+    if not case:
+        return None
+    drafts = case.get("drafts") or []
+    validation = case.get("validation") or {}
+    if case.get("status") == "resolved":
+        return case
+    if drafts and all(draft.get("status") in DOC_DONE_STATUSES for draft in drafts):
+        next_status = "merged"
+    elif any(draft.get("status") in {"patch_proposed", "merged"} for draft in drafts):
+        next_status = "reviewing_patches"
+    elif any(draft.get("status") in {"ai_generated", "draft_committed"} for draft in drafts):
+        next_status = "drafting"
+    elif drafts:
+        next_status = "targets_selected"
+    else:
+        next_status = "new"
+    if (validation.get("reindex") or {}).get("state") == "success":
+        next_status = "reindexed"
+    return _update_case(settings, case_id, {"status": next_status})
+
+
+def refresh_curation_case_status(settings: Settings, case_id: str) -> Optional[Dict[str, Any]]:
+    return _refresh_case_status(settings, case_id)
+
+
+def _targets_from_trace(trace: Optional[Dict[str, Any]]) -> List[str]:
+    targets: List[str] = []
+    if not trace:
+        return targets
+    raw_sources: List[Any] = []
+    raw_sources.extend(trace.get("selected_sources") or [])
+    for item in trace.get("evidence") or []:
+        if isinstance(item, dict):
+            raw_sources.append(item.get("source"))
+    for item in trace.get("candidates") or []:
+        if isinstance(item, dict):
+            raw_sources.append(item.get("source"))
+    for source in raw_sources:
+        repo_path = _canonical_repo_path_from_source(str(source or ""))
+        if repo_path and repo_path not in targets:
+            targets.append(repo_path)
+    return targets[:8]
+
+
+def _create_case_record(settings: Settings, payload: Dict[str, Any]) -> Dict[str, Any]:
+    now = _now()
+    case = {
+        "id": str(uuid4()),
+        "created_at": now,
+        "updated_at": now,
+        "status": payload.get("status") or "new",
+        "title": (payload.get("title") or "Caso de curadoria").strip(),
+        "instruction": (payload.get("instruction") or "").strip(),
+        "source_kind": payload.get("source_kind") or "manual",
+        "source_feedback_id": payload.get("source_feedback_id"),
+        "source_trace_id": payload.get("source_trace_id"),
+        "validation": payload.get("validation") or {},
+        "payload": payload.get("payload") or {},
+    }
+    marker = _placeholder(settings)
+    with _lock:
+        with _connect(settings) as conn:
+            conn.execute(
+                f"""
+                INSERT INTO curation_cases
+                (id, created_at, updated_at, status, title, instruction, source_kind, source_feedback_id,
+                 source_trace_id, validation_json, payload_json)
+                VALUES ({",".join([marker] * 11)})
+                """,
+                (
+                    case["id"],
+                    case["created_at"],
+                    case["updated_at"],
+                    case["status"],
+                    case["title"],
+                    case["instruction"],
+                    case["source_kind"],
+                    case["source_feedback_id"],
+                    case["source_trace_id"],
+                    _safe_json(case["validation"]),
+                    _safe_json(case["payload"]),
+                ),
+            )
+    return get_curation_case(settings, case["id"]) or case
+
+
+def add_targets_to_case(settings: Settings, case_id: str, target_paths: List[str]) -> Dict[str, Any]:
+    case = get_curation_case(settings, case_id)
+    if not case:
+        raise AppError("curation_case_not_found", "Caso de curadoria não encontrado.", 404)
+    existing = {draft.get("target_path") for draft in case.get("drafts") or []}
+    created = []
+    for raw_path in target_paths:
+        target_path = _normalize_repo_path(raw_path)
+        if target_path in existing:
+            continue
+        local_target = _local_path_for_repo_path(settings, target_path)
+        if not local_target.exists():
+            raise AppError("canonical_doc_not_found", "Markdown canônico não encontrado.", 404)
+        title = f"{case['title']}: {PurePosixPath(target_path).name}"
+        draft = create_draft(
+            settings,
+            {
+                "title": title,
+                "instruction": case.get("instruction") or "Curar documento canônico.",
+                "case_id": case_id,
+                "source_feedback_id": case.get("source_feedback_id"),
+                "trace_id": case.get("source_trace_id"),
+                "target_path": target_path,
+                "canonical_targets": [target_path],
+                "decision": "edit",
+                "status": "review",
+            },
+        )
+        created.append(draft)
+        existing.add(target_path)
+    _refresh_case_status(settings, case_id)
+    return {"case": get_curation_case(settings, case_id), "created": created}
+
+
+def create_curation_case(settings: Settings, payload: Dict[str, Any]) -> Dict[str, Any]:
+    trace_id = payload.get("trace_id")
+    trace = get_rag_trace(settings, trace_id) if trace_id else None
+    targets = payload.get("target_paths") or _targets_from_trace(trace)
+    case = _create_case_record(
+        settings,
+        {
+            "title": payload.get("title") or "Curadoria manual",
+            "instruction": payload.get("instruction") or "Atualizar a base de conhecimento com curadoria assistida.",
+            "source_kind": payload.get("source_kind") or "manual",
+            "source_feedback_id": payload.get("source_feedback_id"),
+            "source_trace_id": trace_id,
+            "payload": {"trace": trace, **(payload.get("payload") or {})},
+        },
+    )
+    if targets:
+        add_targets_to_case(settings, case["id"], targets)
+    return get_curation_case(settings, case["id"]) or case
+
+
+def create_case_from_feedback(settings: Settings, feedback_id: str) -> Dict[str, Any]:
+    existing = active_case_for_feedback(settings, feedback_id)
+    if existing:
+        return {"case": existing, "created": False}
+    feedback = get_rag_feedback(settings, feedback_id)
+    if not feedback:
+        raise AppError("rag_feedback_not_found", "Feedback RAG não encontrado.", 404)
+    trace_id = feedback.get("trace_id")
+    trace = get_rag_trace(settings, trace_id) if trace_id else None
+    title_piece = feedback.get("reason") or feedback.get("rating") or "feedback"
+    instruction = "\n\n".join(
+        item
+        for item in [
+            f"Feedback: {feedback.get('rating')} / {feedback.get('reason')}",
+            feedback.get("comment"),
+            feedback.get("expected_answer"),
+            f"Pergunta original: {trace.get('question')}" if trace else None,
+        ]
+        if item
+    )
+    case = create_curation_case(
+        settings,
+        {
+            "title": f"Curadoria RAG: {title_piece}",
+            "instruction": instruction or "Corrigir ou completar o contexto apontado pelo feedback.",
+            "source_kind": "feedback",
+            "source_feedback_id": feedback_id,
+            "trace_id": trace_id,
+            "payload": {"feedback": feedback},
+        },
+    )
+    triage_rag_feedback(settings, feedback_id, "case_open", {"case_id": case["id"], "opened_at": _now()})
+    return {"case": case, "created": True}
+
+
+def ignore_case_draft(settings: Settings, case_id: str, draft_id: str) -> Dict[str, Any]:
+    draft = get_draft(settings, draft_id)
+    if not draft or draft.get("case_id") != case_id:
+        raise AppError("draft_not_found", "Draft do caso não encontrado.", 404)
+    update_draft(settings, draft_id, {"status": "ignored", "decision": "ignored", "completed_at": _now()})
+    return {"case": _refresh_case_status(settings, case_id), "draft": get_draft(settings, draft_id, include_related=True)}
+
+
+def record_case_reindex(settings: Settings, case_id: str, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    case = get_curation_case(settings, case_id)
+    if not case:
+        return None
+    validation = case.get("validation") or {}
+    success = result.get("state") == "success" or result.get("state") == "idle" and not result.get("error")
+    validation["reindex"] = {
+        "state": "success" if success else "error",
+        "at": _now(),
+        "document_count": result.get("document_count"),
+        "chunk_count": result.get("chunk_count"),
+        "vector_backend": result.get("vector_backend"),
+        "vector_chunks": result.get("vector_chunks"),
+        "error": result.get("error"),
+    }
+    updated = _update_case(settings, case_id, {"validation": validation, "status": "reindexed" if success else "reindex_error"})
+    if success and updated and updated.get("source_feedback_id"):
+        triage_rag_feedback(settings, str(updated["source_feedback_id"]), "reindexed", {"case_id": case_id, "reindexed_at": _now()})
+    return get_curation_case(settings, case_id)
+
+
+def record_case_eval(settings: Settings, case_id: str, result: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    case = get_curation_case(settings, case_id)
+    if not case:
+        return None
+    validation = case.get("validation") or {}
+    failed = int(result.get("failed") or 0)
+    validation["eval"] = {
+        "state": "passed" if failed == 0 else "failed",
+        "at": _now(),
+        "total": result.get("total"),
+        "passed": result.get("passed"),
+        "failed": result.get("failed"),
+        "duration_ms": result.get("duration_ms"),
+    }
+    return _update_case(settings, case_id, {"validation": validation})
+
+
+def resolve_curation_case(settings: Settings, case_id: str) -> Dict[str, Any]:
+    case = get_curation_case(settings, case_id)
+    if not case:
+        raise AppError("curation_case_not_found", "Caso de curadoria não encontrado.", 404)
+    drafts = case.get("drafts") or []
+    if drafts and not all(draft.get("status") in DOC_DONE_STATUSES for draft in drafts):
+        raise AppError("curation_case_incomplete", "Conclua ou ignore todos os documentos antes de resolver.", 422)
+    if (case.get("validation") or {}).get("reindex", {}).get("state") != "success":
+        raise AppError("curation_case_not_reindexed", "Reindexe e valide o caso antes de resolver.", 422)
+    updated = _update_case(settings, case_id, {"status": "resolved"})
+    if updated and updated.get("source_feedback_id"):
+        triage_rag_feedback(settings, str(updated["source_feedback_id"]), "resolved", {"case_id": case_id, "resolved_at": _now()})
+    return updated or case
 
 
 def delete_draft(settings: Settings, draft_id: str) -> bool:
@@ -626,6 +1145,44 @@ def _canonical_target_contents(settings: Settings, targets: Iterable[str]) -> Li
             continue
         output.append({"path": repo_path, "content": local_path.read_text(encoding="utf-8")})
     return output[:3]
+
+
+def list_canonical_documents(settings: Settings) -> List[Dict[str, Any]]:
+    base = settings.resolved_knowledge_dir.resolve()
+    docs: List[Dict[str, Any]] = []
+    if not base.exists():
+        return docs
+    for path in sorted(base.rglob("*.md")):
+        try:
+            relative = path.resolve().relative_to(base).as_posix()
+        except ValueError:
+            continue
+        if relative.startswith("_drafts/"):
+            continue
+        repo_path = f"knowledge/{relative}"
+        text = path.read_text(encoding="utf-8")
+        meta: Dict[str, Any] = {}
+        if text.startswith("---"):
+            parts = text.split("---", 2)
+            if len(parts) >= 3:
+                try:
+                    parsed = yaml.safe_load(parts[1]) or {}
+                    meta = parsed if isinstance(parsed, dict) else {}
+                except yaml.YAMLError:
+                    meta = {}
+        if str(meta.get("visibility", "public")).strip().lower() != "public":
+            continue
+        docs.append(
+            {
+                "path": repo_path,
+                "title": meta.get("title") or path.stem.replace("-", " ").title(),
+                "category": meta.get("category") or relative.split("/")[0],
+                "summary": meta.get("summary") or "",
+                "tags": meta.get("tags") or [],
+                "priority": meta.get("priority"),
+            }
+        )
+    return docs
 
 
 def _extract_json_object(text: str) -> Dict[str, Any]:

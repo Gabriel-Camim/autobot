@@ -22,15 +22,26 @@ from agent import AppError, build_rag_probe, realtime_search_knowledge
 from config import Settings, get_settings
 from draft_studio import (
     add_attachment,
+    add_targets_to_case,
+    create_case_from_feedback,
+    create_curation_case,
     create_draft,
     delete_attachment,
     delete_draft,
     generate_draft_with_agent,
+    get_curation_case,
     get_draft,
     get_patch,
+    ignore_case_draft,
+    list_canonical_documents,
+    list_curation_cases,
     list_drafts,
     propose_patch_from_draft,
+    record_case_eval,
+    record_case_reindex,
+    refresh_curation_case_status,
     revert_draft_step,
+    resolve_curation_case,
     update_draft,
     update_patch_status,
 )
@@ -40,6 +51,7 @@ from job_scans import delete_job_scan, get_job_scan, list_job_scans
 from pgvector_store import pgvector_status, uses_pgvector
 from rag_lab import coverage_summary, last_eval_run, run_rag_eval
 from rag_quality import (
+    archive_rag_feedback,
     eval_case_from_suggestion,
     get_knowledge_suggestion,
     get_rag_trace,
@@ -76,6 +88,7 @@ _reindex_status: Dict[str, Any] = {
     "sample_ok": None,
     "sample_error": None,
     "github_branch": None,
+    "case_id": None,
     "error": None,
 }
 
@@ -160,6 +173,7 @@ class ReindexStatusResponse(BaseModel):
     github_branch: Optional[str] = None
     knowledge_dir: Optional[str] = None
     storage_target: Optional[str] = None
+    case_id: Optional[str] = None
     error: Optional[str] = None
 
 
@@ -218,6 +232,21 @@ class DraftActionRequest(BaseModel):
     target_path: Optional[str] = None
     patch_id: Optional[str] = None
     step: Optional[str] = None
+
+
+class CurationCaseCreateRequest(BaseModel):
+    title: Optional[str] = None
+    instruction: Optional[str] = None
+    trace_id: Optional[str] = None
+    target_paths: List[str] = Field(default_factory=list)
+
+
+class CurationCaseTargetsRequest(BaseModel):
+    target_paths: List[str] = Field(default_factory=list)
+
+
+class CurationCaseResolveRequest(BaseModel):
+    message: Optional[str] = None
 
 
 TreeNode.model_rebuild()
@@ -828,7 +857,7 @@ def _reindex_diagnostics(settings: Settings, docs: List[Any]) -> Dict[str, Any]:
     return diagnostics
 
 
-def _run_reindex(settings: Settings, actor: Optional[str] = None) -> None:
+def _run_reindex(settings: Settings, actor: Optional[str] = None, case_id: Optional[str] = None) -> None:
     try:
         docs = load_public_documents(settings)
         chunks = ingest(settings)
@@ -840,14 +869,17 @@ def _run_reindex(settings: Settings, actor: Optional[str] = None) -> None:
             document_count=len(docs),
             chunk_count=chunks,
             **diagnostics,
+            case_id=case_id,
             error=None,
         )
+        if case_id:
+            record_case_reindex(settings, case_id, dict(_reindex_status))
         log_event(
             settings,
             "admin_reindex_success",
             session_id=actor,
             actor_type="admin",
-            payload={"document_count": len(docs), "chunk_count": chunks, **diagnostics},
+            payload={"document_count": len(docs), "chunk_count": chunks, "case_id": case_id, **diagnostics},
         )
     except Exception as exc:
         sanitized = _sanitize_error(exc)
@@ -855,17 +887,22 @@ def _run_reindex(settings: Settings, actor: Optional[str] = None) -> None:
             state="error",
             finished_at=time.time(),
             duration_ms=int((time.time() - (_reindex_status.get("started_at") or time.time())) * 1000),
+            case_id=case_id,
             error=sanitized,
         )
+        if case_id:
+            record_case_reindex(settings, case_id, dict(_reindex_status))
         log_event(settings, "admin_reindex_error", session_id=actor, actor_type="admin", payload={"error": sanitized})
     finally:
         _reindex_lock.release()
 
 
 @router.post("/reindex", response_model=ReindexStatusResponse)
-def reindex_admin(request: Request):
+def reindex_admin(request: Request, case_id: Optional[str] = Query(default=None)):
     settings = _settings()
     user = _require_admin(request, settings)
+    if case_id and not get_curation_case(settings, case_id):
+        raise AppError("curation_case_not_found", "Caso de curadoria não encontrado.", 404)
     if not _reindex_lock.acquire(blocking=False):
         raise AppError("reindex_running", "Reindexação já está em andamento.", 409)
     _set_reindex_status(
@@ -886,10 +923,11 @@ def reindex_admin(request: Request):
         github_branch=settings.github_branch,
         knowledge_dir=str(settings.resolved_knowledge_dir),
         storage_target=settings.pgvector_table if uses_pgvector(settings) else str(settings.resolved_chroma_dir),
+        case_id=case_id,
         error=None,
     )
-    log_event(settings, "admin_reindex_start", request=request, session_id=user.login, actor_type="admin")
-    thread = threading.Thread(target=_run_reindex, args=(settings, user.login), daemon=True)
+    log_event(settings, "admin_reindex_start", request=request, session_id=user.login, actor_type="admin", payload={"case_id": case_id})
+    thread = threading.Thread(target=_run_reindex, args=(settings, user.login, case_id), daemon=True)
     thread.start()
     return ReindexStatusResponse(**_reindex_status)
 
@@ -1000,6 +1038,33 @@ def admin_rag_feedback(
     return {"feedback": list_rag_feedback(settings, status=status, limit=limit)}
 
 
+@router.post("/rag/feedback/{feedback_id}/draft-case")
+def admin_rag_feedback_draft_case(feedback_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    result = create_case_from_feedback(settings, feedback_id)
+    log_event(
+        settings,
+        "admin_rag_feedback_draft_case",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"feedback_id": feedback_id, "case_id": result.get("case", {}).get("id"), "created": result.get("created")},
+    )
+    return result
+
+
+@router.delete("/rag/feedback/{feedback_id}")
+def admin_rag_feedback_delete(feedback_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    feedback = archive_rag_feedback(settings, feedback_id, admin=user.login)
+    if not feedback:
+        raise AppError("rag_feedback_not_found", "Feedback RAG não encontrado.", 404)
+    log_event(settings, "admin_rag_feedback_archive", request=request, session_id=user.login, actor_type="admin", payload={"feedback_id": feedback_id})
+    return {"ok": True, "feedback": feedback}
+
+
 @router.post("/rag/feedback/{feedback_id}/triage")
 def admin_rag_feedback_triage(feedback_id: str, payload: RagFeedbackTriageRequest, request: Request):
     settings = _settings()
@@ -1014,6 +1079,90 @@ def admin_rag_feedback_triage(feedback_id: str, payload: RagFeedbackTriageReques
         raise AppError("rag_feedback_not_found", "Feedback RAG não encontrado.", 404)
     log_event(settings, "admin_rag_feedback_triage", request=request, session_id=user.login, actor_type="admin", payload={"feedback_id": feedback_id, "status": payload.status})
     return feedback
+
+
+@router.get("/curation/cases")
+def admin_curation_cases(
+    request: Request,
+    status: Optional[str] = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=500),
+):
+    settings = _settings()
+    _require_admin(request, settings)
+    return {"cases": list_curation_cases(settings, status=status, limit=limit)}
+
+
+@router.post("/curation/cases")
+def admin_curation_case_create(payload: CurationCaseCreateRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    case = create_curation_case(settings, payload.model_dump(exclude_none=True))
+    log_event(settings, "admin_curation_case_create", request=request, session_id=user.login, actor_type="admin", payload={"case_id": case.get("id")})
+    return case
+
+
+@router.get("/curation/cases/{case_id}")
+def admin_curation_case_detail(case_id: str, request: Request):
+    settings = _settings()
+    _require_admin(request, settings)
+    case = get_curation_case(settings, case_id)
+    if not case:
+        raise AppError("curation_case_not_found", "Caso de curadoria não encontrado.", 404)
+    return case
+
+
+@router.post("/curation/cases/{case_id}/targets")
+def admin_curation_case_targets(case_id: str, payload: CurationCaseTargetsRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    result = add_targets_to_case(settings, case_id, payload.target_paths)
+    log_event(settings, "admin_curation_case_targets", request=request, session_id=user.login, actor_type="admin", payload={"case_id": case_id, "targets": payload.target_paths})
+    return result
+
+
+@router.post("/curation/cases/{case_id}/drafts/{draft_id}/ignore")
+def admin_curation_case_draft_ignore(case_id: str, draft_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    result = ignore_case_draft(settings, case_id, draft_id)
+    log_event(settings, "admin_curation_draft_ignore", request=request, session_id=user.login, actor_type="admin", payload={"case_id": case_id, "draft_id": draft_id})
+    return result
+
+
+@router.post("/curation/cases/{case_id}/drafts/{draft_id}/agent/stream")
+def admin_curation_case_draft_agent_stream(case_id: str, draft_id: str, payload: DraftAgentRequest, request: Request):
+    settings = _settings()
+    _require_admin(request, settings)
+    draft = get_draft(settings, draft_id)
+    if not draft or draft.get("case_id") != case_id:
+        raise AppError("draft_not_found", "Draft do caso não encontrado.", 404)
+    return admin_knowledge_draft_agent_stream(draft_id, payload, request)
+
+
+@router.post("/curation/cases/{case_id}/validate/reindex")
+def admin_curation_case_reindex(case_id: str, request: Request):
+    return reindex_admin(request, case_id=case_id)
+
+
+@router.post("/curation/cases/{case_id}/validate/eval")
+def admin_curation_case_eval(case_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    if not get_curation_case(settings, case_id):
+        raise AppError("curation_case_not_found", "Caso de curadoria não encontrado.", 404)
+    result = run_rag_eval(settings)
+    case = record_case_eval(settings, case_id, result)
+    log_event(settings, "admin_curation_case_eval", request=request, session_id=user.login, actor_type="admin", payload={"case_id": case_id, "failed": result.get("failed")})
+    return {"run": result, "case": case, "coverage": coverage_summary(settings)}
+
+
+@router.post("/curation/cases/{case_id}/resolve")
+def admin_curation_case_resolve(case_id: str, payload: CurationCaseResolveRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    case = resolve_curation_case(settings, case_id)
+    log_event(settings, "admin_curation_case_resolve", request=request, session_id=user.login, actor_type="admin", payload={"case_id": case_id, "message": payload.message})
+    return case
 
 
 @router.get("/knowledge/suggestions")
@@ -1121,6 +1270,13 @@ def admin_knowledge_suggestion_create_eval_case(suggestion_id: str, payload: Sug
     return {"ok": True, "case": case, "commit": commit}
 
 
+@router.get("/knowledge/canonical-docs")
+def admin_knowledge_canonical_docs(request: Request):
+    settings = _settings()
+    _require_admin(request, settings)
+    return {"documents": list_canonical_documents(settings)}
+
+
 @router.get("/knowledge/drafts")
 def admin_knowledge_drafts(
     request: Request,
@@ -1160,7 +1316,7 @@ def admin_knowledge_draft_detail(draft_id: str, request: Request):
     _require_admin(request, settings)
     draft = get_draft(settings, draft_id, include_related=True)
     if not draft:
-        raise AppError("draft_not_found", "Draft nÃ£o encontrado.", 404)
+        raise AppError("draft_not_found", "Draft não encontrado.", 404)
     return draft
 
 
@@ -1173,7 +1329,7 @@ def admin_knowledge_draft_update(draft_id: str, payload: DraftUpdateRequest, req
         _validate_markdown_frontmatter(updates["draft_markdown"])
     draft = update_draft(settings, draft_id, updates)
     if not draft:
-        raise AppError("draft_not_found", "Draft nÃ£o encontrado.", 404)
+        raise AppError("draft_not_found", "Draft não encontrado.", 404)
     log_event(settings, "admin_draft_update", request=request, session_id=user.login, actor_type="admin", payload={"draft_id": draft_id})
     return draft
 
@@ -1210,7 +1366,7 @@ def admin_knowledge_draft_attachment_delete(draft_id: str, attachment_id: str, r
     settings = _settings()
     user = _require_admin(request, settings)
     if not delete_attachment(settings, draft_id, attachment_id):
-        raise AppError("attachment_not_found", "Anexo nÃ£o encontrado.", 404)
+        raise AppError("attachment_not_found", "Anexo não encontrado.", 404)
     log_event(settings, "admin_draft_attachment_delete", request=request, session_id=user.login, actor_type="admin", payload={"draft_id": draft_id, "attachment_id": attachment_id})
     return {"ok": True, "draft": get_draft(settings, draft_id, include_related=True)}
 
@@ -1222,7 +1378,7 @@ def admin_knowledge_draft_agent_stream(draft_id: str, payload: DraftAgentRequest
 
     def generate():
         try:
-            yield _admin_sse("stage", {"id": "received", "label": "InstruÃ§Ã£o recebida", "status": "done"})
+            yield _admin_sse("stage", {"id": "received", "label": "Instrução recebida", "status": "done"})
             yield _admin_sse("stage", {"id": "retrieval", "label": "Recuperando contexto no RAG", "status": "active"})
             result = generate_draft_with_agent(
                 settings,
@@ -1230,11 +1386,13 @@ def admin_knowledge_draft_agent_stream(draft_id: str, payload: DraftAgentRequest
                 instruction=payload.instruction,
                 target_paths=payload.target_paths,
             )
+            case = refresh_curation_case_status(settings, str(result["draft"].get("case_id"))) if result.get("draft", {}).get("case_id") else None
             yield _admin_sse("stage", {"id": "draft", "label": "Draft e patches preparados", "status": "done"})
             yield _admin_sse(
                 "done",
                 {
                     "draft": result["draft"],
+                    "case": case,
                     "run": result["run"],
                     "patches": result["patches"],
                     "fallback": result["fallback"],
@@ -1262,7 +1420,7 @@ def admin_knowledge_draft_commit(draft_id: str, payload: DraftActionRequest, req
     user = _require_admin(request, settings)
     draft = get_draft(settings, draft_id, include_related=True)
     if not draft:
-        raise AppError("draft_not_found", "Draft nÃ£o encontrado.", 404)
+        raise AppError("draft_not_found", "Draft não encontrado.", 404)
     repo_path = draft.get("suggested_path") or f"knowledge/_drafts/{draft_id}.md"
     if not str(repo_path).startswith("knowledge/_drafts/"):
         raise AppError("invalid_draft_path", "Draft precisa ser salvo dentro de knowledge/_drafts/.", 422)
@@ -1270,6 +1428,8 @@ def admin_knowledge_draft_commit(draft_id: str, payload: DraftActionRequest, req
     _validate_markdown_frontmatter(draft["draft_markdown"])
     commit = _github_put(settings, repo_path, draft["draft_markdown"], payload.message or f"admin: commit draft {repo_path}")
     updated = update_draft(settings, draft_id, {"status": "draft_committed", "git_path": repo_path, "git_commit_sha": commit.commit_sha})
+    if updated and updated.get("case_id"):
+        refresh_curation_case_status(settings, str(updated["case_id"]))
     log_event(settings, "admin_draft_commit", request=request, session_id=user.login, actor_type="admin", payload={"draft_id": draft_id, "path": repo_path, "commit_sha": commit.commit_sha})
     return {"ok": True, "draft": updated, "commit": commit}
 
@@ -1279,6 +1439,8 @@ def admin_knowledge_draft_propose_patch(draft_id: str, payload: DraftActionReque
     settings = _settings()
     user = _require_admin(request, settings)
     result = propose_patch_from_draft(settings, draft_id, target_path=payload.target_path)
+    if result.get("draft", {}).get("case_id"):
+        result["case"] = refresh_curation_case_status(settings, str(result["draft"]["case_id"]))
     log_event(settings, "admin_draft_patch_propose", request=request, session_id=user.login, actor_type="admin", payload={"draft_id": draft_id, "patch_id": result.get("patch", {}).get("id")})
     return result
 
@@ -1289,20 +1451,21 @@ def admin_knowledge_draft_apply_patch(draft_id: str, payload: DraftActionRequest
     user = _require_admin(request, settings)
     draft = get_draft(settings, draft_id, include_related=True)
     if not draft:
-        raise AppError("draft_not_found", "Draft nÃ£o encontrado.", 404)
+        raise AppError("draft_not_found", "Draft não encontrado.", 404)
     patch_id = payload.patch_id or next((patch.get("id") for patch in draft.get("patches") or [] if patch.get("status") == "proposed"), None)
     if not patch_id:
         raise AppError("patch_not_found", "Nenhum patch proposto para aplicar.", 404)
     patch = get_patch(settings, draft_id, patch_id)
     if not patch:
-        raise AppError("patch_not_found", "Patch nÃ£o encontrado.", 404)
+        raise AppError("patch_not_found", "Patch não encontrado.", 404)
     repo_path, _target = _resolve_content_path(patch["target_path"], settings, require_markdown=True)
     _validate_markdown_frontmatter(patch["proposed_content"])
     commit = _github_put(settings, repo_path, patch["proposed_content"], payload.message or f"admin: apply draft patch {repo_path}")
     update_patch_status(settings, draft_id, patch_id, "applied", commit.commit_sha)
-    updated = update_draft(settings, draft_id, {"status": "merged"})
+    updated = update_draft(settings, draft_id, {"status": "merged", "decision": "edited", "completed_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())})
+    case = refresh_curation_case_status(settings, str(updated["case_id"])) if updated and updated.get("case_id") else None
     log_event(settings, "admin_draft_patch_apply", request=request, session_id=user.login, actor_type="admin", payload={"draft_id": draft_id, "patch_id": patch_id, "path": repo_path, "commit_sha": commit.commit_sha})
-    return {"ok": True, "draft": updated, "patch": get_patch(settings, draft_id, patch_id), "commit": commit}
+    return {"ok": True, "draft": updated, "case": case, "patch": get_patch(settings, draft_id, patch_id), "commit": commit}
 
 
 @router.post("/knowledge/drafts/{draft_id}/revert-step")
@@ -1311,7 +1474,7 @@ def admin_knowledge_draft_revert_step(draft_id: str, payload: DraftActionRequest
     user = _require_admin(request, settings)
     draft = get_draft(settings, draft_id, include_related=True)
     if not draft:
-        raise AppError("draft_not_found", "Draft nÃ£o encontrado.", 404)
+        raise AppError("draft_not_found", "Draft não encontrado.", 404)
     commit = None
     step = payload.step or "review"
     if step in {"review", "delete_committed_draft"} and draft.get("git_path"):
@@ -1331,7 +1494,7 @@ def admin_knowledge_draft_delete(draft_id: str, request: Request):
     user = _require_admin(request, settings)
     draft = get_draft(settings, draft_id, include_related=True)
     if not draft:
-        raise AppError("draft_not_found", "Draft nÃ£o encontrado.", 404)
+        raise AppError("draft_not_found", "Draft não encontrado.", 404)
     if draft.get("git_path"):
         try:
             _github_delete(settings, draft["git_path"], f"admin: delete draft {draft['git_path']}")
