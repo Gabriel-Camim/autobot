@@ -24,6 +24,7 @@ from rag_quality import (
     rag_quality_storage_status,
     update_rag_trace_actor,
 )
+from rag_studio import rag_studio_storage_status
 from realtime import create_realtime_call
 from voice import synthesize_speech_base64, transcribe_upload
 from warmup import start_warmup, warmup_status
@@ -340,6 +341,8 @@ def health():
             "knowledge_suggestions",
             "draft_studio",
             "draft_agent",
+            "rag_studio",
+            "rag_change_proposals",
         ],
         "cors_local_enabled": settings.allow_local_cors,
         "frontend_origins": settings.frontend_origin_list,
@@ -354,6 +357,7 @@ def health():
         "job_scans": job_scan_storage_status(settings),
         "rag_quality": rag_quality_storage_status(settings),
         "draft_studio": draft_studio_storage_status(settings),
+        "rag_studio": rag_studio_storage_status(settings),
         "rag_rerank_enabled": settings.rag_rerank_enabled,
         "rag_rerank_provider": settings.rag_rerank_provider,
         "rag_feedback_enabled": settings.rag_feedback_enabled,

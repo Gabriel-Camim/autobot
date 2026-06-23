@@ -62,6 +62,7 @@ from rag_quality import (
     update_knowledge_suggestion_details,
     update_knowledge_suggestion_status,
 )
+import rag_studio
 from warmup import start_warmup, warmup_status
 
 
@@ -247,6 +248,33 @@ class CurationCaseTargetsRequest(BaseModel):
 
 class CurationCaseResolveRequest(BaseModel):
     message: Optional[str] = None
+
+
+class RagStudioProposalCreateRequest(BaseModel):
+    title: Optional[str] = None
+    problem_statement: Optional[str] = None
+    question: Optional[str] = None
+    active_context: Optional[str] = None
+    origin_type: Optional[str] = None
+    origin_id: Optional[str] = None
+
+
+class RagStudioInvestigateRequest(BaseModel):
+    question: Optional[str] = None
+    active_context: Optional[str] = None
+    limit: int = Field(default=12, ge=1, le=20)
+
+
+class RagStudioDocumentsRequest(BaseModel):
+    paths: List[str] = Field(default_factory=list)
+
+
+class RagStudioPatchRequest(BaseModel):
+    instruction: str
+
+
+class RagStudioArchiveRequest(BaseModel):
+    reason: Optional[str] = None
 
 
 TreeNode.model_rebuild()
@@ -1063,6 +1091,272 @@ def admin_rag_feedback_delete(feedback_id: str, request: Request):
         raise AppError("rag_feedback_not_found", "Feedback RAG não encontrado.", 404)
     log_event(settings, "admin_rag_feedback_archive", request=request, session_id=user.login, actor_type="admin", payload={"feedback_id": feedback_id})
     return {"ok": True, "feedback": feedback}
+
+
+@router.get("/rag-studio/inbox")
+def admin_rag_studio_inbox(request: Request, limit: int = Query(default=100, ge=1, le=500)):
+    settings = _settings()
+    _require_admin(request, settings)
+    return rag_studio.list_inbox(settings, limit=limit)
+
+
+@router.post("/rag-studio/proposals")
+def admin_rag_studio_create_proposal(payload: RagStudioProposalCreateRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    proposal = rag_studio.create_proposal(settings, payload.model_dump(exclude_none=True))
+    log_event(
+        settings,
+        "admin_rag_studio_proposal_create",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"proposal_id": proposal.get("id"), "origin_type": proposal.get("origin_type")},
+    )
+    return proposal
+
+
+@router.post("/rag-studio/proposals/from-feedback/{feedback_id}")
+def admin_rag_studio_create_from_feedback(feedback_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    result = rag_studio.create_proposal_from_feedback(settings, feedback_id)
+    proposal = result.get("proposal") or {}
+    log_event(
+        settings,
+        "admin_rag_studio_from_feedback",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"feedback_id": feedback_id, "proposal_id": proposal.get("id"), "created": result.get("created")},
+    )
+    return result
+
+
+@router.get("/rag-studio/proposals/{proposal_id}")
+def admin_rag_studio_proposal_detail(proposal_id: str, request: Request):
+    settings = _settings()
+    _require_admin(request, settings)
+    proposal = rag_studio.get_proposal(settings, proposal_id)
+    if not proposal:
+        raise AppError("proposal_not_found", "Proposta RAG Studio nao encontrada.", 404)
+    return proposal
+
+
+@router.post("/rag-studio/proposals/{proposal_id}/investigate")
+def admin_rag_studio_investigate(proposal_id: str, payload: RagStudioInvestigateRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    proposal = rag_studio.investigate_proposal(
+        settings,
+        proposal_id,
+        question=payload.question,
+        active_context=payload.active_context,
+        limit=payload.limit,
+    )
+    log_event(
+        settings,
+        "admin_rag_studio_investigate",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"proposal_id": proposal_id, "documents": len(proposal.get("documents") or [])},
+    )
+    return proposal
+
+
+@router.post("/rag-studio/proposals/{proposal_id}/documents")
+def admin_rag_studio_add_documents(proposal_id: str, payload: RagStudioDocumentsRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    proposal = rag_studio.add_documents(settings, proposal_id, payload.paths)
+    log_event(
+        settings,
+        "admin_rag_studio_documents",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"proposal_id": proposal_id, "paths": payload.paths},
+    )
+    return proposal
+
+
+@router.post("/rag-studio/documents/{document_id}/generate-patch")
+def admin_rag_studio_generate_patch(document_id: str, payload: RagStudioPatchRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    proposal = rag_studio.generate_patch(settings, document_id, payload.instruction)
+    log_event(
+        settings,
+        "admin_rag_studio_patch_generate",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"document_id": document_id, "proposal_id": proposal.get("id")},
+    )
+    return proposal
+
+
+@router.post("/rag-studio/patches/{patch_id}/apply")
+def admin_rag_studio_apply_patch(patch_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    patch = rag_studio.get_patch(settings, patch_id)
+    if not patch:
+        raise AppError("change_patch_not_found", "Patch nao encontrado.", 404)
+    if patch.get("status") != "proposed":
+        raise AppError("change_patch_not_proposed", "Este patch ja foi aplicado ou descartado.", 409)
+    normalized, target = _resolve_content_path(str(patch.get("target_path") or ""), settings)
+    proposed = str(patch.get("proposed_content") or "")
+    _validate_markdown_frontmatter(proposed)
+    commit = _github_put(settings, normalized, proposed, f"rag-studio: update {normalized}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(proposed, encoding="utf-8", newline="\n")
+    proposal = rag_studio.mark_patch_applied(settings, patch_id, commit.commit_sha)
+    log_event(
+        settings,
+        "admin_rag_studio_patch_apply",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"patch_id": patch_id, "proposal_id": proposal.get("id"), "commit_sha": commit.commit_sha},
+    )
+    return {"proposal": proposal, "commit": commit.model_dump()}
+
+
+@router.post("/rag-studio/documents/{document_id}/ignore")
+def admin_rag_studio_ignore_document(document_id: str, payload: RagStudioArchiveRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    proposal = rag_studio.ignore_document(settings, document_id, payload.reason)
+    log_event(
+        settings,
+        "admin_rag_studio_document_ignore",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"document_id": document_id, "proposal_id": proposal.get("id")},
+    )
+    return proposal
+
+
+def _evidence_sources(result: Dict[str, Any]) -> List[str]:
+    sources: List[str] = []
+    for item in result.get("evidence") or []:
+        if not isinstance(item, dict):
+            continue
+        source = str(item.get("source") or "").replace("\\", "/").strip("/")
+        if source and source not in sources:
+            sources.append(source)
+            prefixed = f"knowledge/{source}" if not source.startswith("knowledge/") else source
+            if prefixed not in sources:
+                sources.append(prefixed)
+    return sources
+
+
+@router.post("/rag-studio/proposals/{proposal_id}/validate")
+def admin_rag_studio_validate(proposal_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    proposal = rag_studio.get_proposal(settings, proposal_id)
+    if not proposal:
+        raise AppError("proposal_not_found", "Proposta RAG Studio nao encontrada.", 404)
+    documents = proposal.get("documents") or []
+    if not documents:
+        raise AppError("proposal_without_documents", "Selecione ao menos um Markdown antes de validar.", 409)
+    unfinished = [doc for doc in documents if doc.get("status") not in {"applied", "ignored"}]
+    if unfinished:
+        raise AppError("proposal_documents_pending", "Aplique ou ignore todos os documentos antes de validar.", 409)
+    if not _reindex_lock.acquire(blocking=False):
+        raise AppError("reindex_running", "Reindexacao ja esta em andamento.", 409)
+    _set_reindex_status(
+        state="running",
+        started_at=time.time(),
+        finished_at=None,
+        duration_ms=None,
+        document_count=0,
+        chunk_count=0,
+        vector_backend=settings.vector_backend,
+        vector_ready=None,
+        vector_chunks=None,
+        last_reindex_at=None,
+        sample_query=None,
+        sample_sources=[],
+        sample_ok=None,
+        sample_error=None,
+        github_branch=settings.github_branch,
+        knowledge_dir=str(settings.resolved_knowledge_dir),
+        storage_target=settings.pgvector_table if uses_pgvector(settings) else str(settings.resolved_chroma_dir),
+        case_id=None,
+        error=None,
+    )
+    _run_reindex(settings, user.login, None)
+    reindex_result = dict(_reindex_status)
+    probe_result: Dict[str, Any] = {}
+    expected_paths = [str(doc.get("path") or "") for doc in documents if doc.get("status") == "applied"]
+    validation_state = "error"
+    validation_error = reindex_result.get("error")
+    if reindex_result.get("state") == "success":
+        probe_question = str(proposal.get("question") or proposal.get("problem_statement") or "").strip()
+        if not probe_question:
+            validation_error = "A proposta nao tem pergunta ou problema para o probe."
+        else:
+            probe_result = build_rag_probe(settings, probe_question, proposal.get("active_context"), limit=12)
+            sources = _evidence_sources(probe_result)
+            recovered_expected = not expected_paths or any(path in sources for path in expected_paths)
+            validation_state = "success" if probe_result.get("documents", 0) and recovered_expected else "failed"
+            if validation_state == "failed":
+                validation_error = "Probe executado, mas nao recuperou documento esperado."
+    validation = {
+        "state": validation_state,
+        "validated_at": time.time(),
+        "reindex": reindex_result,
+        "probe": probe_result,
+        "expected_paths": expected_paths,
+        "error": validation_error,
+    }
+    updated = rag_studio.record_validation(settings, proposal_id, validation)
+    log_event(
+        settings,
+        "admin_rag_studio_validate",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"proposal_id": proposal_id, "state": validation_state, "expected_paths": expected_paths},
+    )
+    return updated
+
+
+@router.post("/rag-studio/proposals/{proposal_id}/resolve")
+def admin_rag_studio_resolve(proposal_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    proposal = rag_studio.resolve_proposal(settings, proposal_id)
+    log_event(
+        settings,
+        "admin_rag_studio_resolve",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"proposal_id": proposal_id},
+    )
+    return proposal
+
+
+@router.post("/rag-studio/proposals/{proposal_id}/archive")
+def admin_rag_studio_archive(proposal_id: str, payload: RagStudioArchiveRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    proposal = rag_studio.archive_proposal(settings, proposal_id, payload.reason)
+    log_event(
+        settings,
+        "admin_rag_studio_archive",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"proposal_id": proposal_id, "reason": payload.reason},
+    )
+    return proposal
 
 
 @router.post("/rag/feedback/{feedback_id}/triage")
