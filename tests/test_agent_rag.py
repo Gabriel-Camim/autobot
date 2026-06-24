@@ -231,3 +231,71 @@ def test_build_rag_probe_returns_structured_evidence(monkeypatch):
     assert result["evidence"][0]["channel"] == "hybrid"
     assert result["evidence"][0]["distance"] == 0.22
     assert "Python" in result["evidence"][0]["excerpt"]
+
+
+def test_semantic_bridge_expands_short_query_to_curated_domain(monkeypatch, tmp_path: Path):
+    knowledge = tmp_path / "knowledge"
+    (knowledge / "_system").mkdir(parents=True)
+    (knowledge / "trajetoria").mkdir(parents=True)
+    (knowledge / "gabriel").mkdir(parents=True)
+    (knowledge / "_system" / "semantic-bridges.yaml").write_text(
+        """concepts:
+  - id: trajetoria_ia
+    aliases:
+      - trajetoria
+      - carreira em ia
+    expansion_terms:
+      - IA generativa automacoes dados sistemas carreira tecnologia
+    target_sources:
+      - trajetoria/ia.md
+    active_contexts:
+      - gabriel
+      - trajetoria
+    priority_boost: 10
+""",
+        encoding="utf-8",
+    )
+    (knowledge / "trajetoria" / "ia.md").write_text(
+        """---
+title: Trajetoria em IA
+category: trajetoria
+tags: [ia, dados, automacoes]
+visibility: public
+priority: 1
+summary: Virada de Gabriel para IA aplicada, dados e sistemas.
+---
+
+Gabriel conectou IA generativa, automacoes, dados e sistemas para construir produtos reais.
+""",
+        encoding="utf-8",
+    )
+    (knowledge / "gabriel" / "perfil.md").write_text(
+        """---
+title: Perfil
+category: gabriel
+tags: [perfil]
+visibility: public
+priority: 3
+summary: Perfil geral.
+---
+
+Gabriel tem perfil analitico e construtor.
+""",
+        encoding="utf-8",
+    )
+
+    class EmptyVectorstore:
+        def similarity_search_with_score(self, _query, k):
+            return []
+
+    monkeypatch.setattr(agent, "_build_vectorstore", lambda _settings: EmptyVectorstore())
+    settings = Settings(_env_file=None, KNOWLEDGE_DIR=knowledge, RAG_K=3)
+
+    result = agent.build_rag_probe(settings, "trajetoria", "gabriel")
+    sources = [item["source"] for item in result["evidence"]]
+
+    assert "trajetoria/ia.md" in sources
+    assert result["semantic_bridges"][0]["id"] == "trajetoria_ia"
+    assert any("IA generativa" in variant for variant in result["query_variants"])
+    bridge_evidence = next(item for item in result["evidence"] if item["source"] == "trajetoria/ia.md")
+    assert "trajetoria_ia" in bridge_evidence["bridge_ids"]

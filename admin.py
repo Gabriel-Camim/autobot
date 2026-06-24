@@ -628,6 +628,50 @@ def admin_session(request: Request):
     )
 
 
+@router.get("/bootstrap")
+def admin_bootstrap(request: Request):
+    settings = _settings()
+    user = _current_admin(request, settings)
+    vector_status = (
+        pgvector_status(settings)
+        if uses_pgvector(settings)
+        else {"backend": "chroma", "ready": False, "chunks": None, "last_reindex_at": None, "error": None}
+    )
+    return {
+        "session": {
+            "authenticated": bool(user),
+            "user": user.model_dump() if user else None,
+            "configured": _admin_configured(settings),
+        },
+        "environment": {
+            "version": settings.app_version,
+            "commit": settings.app_commit,
+            "app_env": settings.app_env,
+            "github_branch": settings.github_branch,
+            "public_frontend_url": settings.public_frontend_url,
+            "admin_frontend_url": settings.admin_frontend_url,
+            "public_backend_url": settings.public_backend_url or settings.admin_public_base_url,
+        },
+        "rag": {
+            "vector_backend": vector_status.get("backend"),
+            "vector_index_ready": vector_status.get("ready"),
+            "vector_chunks": vector_status.get("chunks"),
+            "last_reindex_at": vector_status.get("last_reindex_at"),
+            "vector_error": vector_status.get("error"),
+            "rerank_enabled": settings.rag_rerank_enabled,
+            "rerank_provider": settings.rag_rerank_provider,
+        },
+        "warmup": warmup_status(),
+        "features": {
+            "rag_lab": True,
+            "rag_studio": True,
+            "semantic_bridges": True,
+            "rollback": True,
+            "context_documents": True,
+        },
+    }
+
+
 @router.get("/auth/github/login")
 def github_login(return_to: Optional[str] = Query(default=None)):
     settings = _settings()
@@ -1143,6 +1187,20 @@ def admin_rag_studio_proposal_detail(proposal_id: str, request: Request):
     return proposal
 
 
+@router.get("/rag-studio/proposals/{proposal_id}/case-file")
+def admin_rag_studio_case_file(proposal_id: str, request: Request):
+    settings = _settings()
+    _require_admin(request, settings)
+    return rag_studio.get_case_file(settings, proposal_id)
+
+
+@router.get("/rag-studio/documents/{document_id}/content")
+def admin_rag_studio_document_content(document_id: str, request: Request):
+    settings = _settings()
+    _require_admin(request, settings)
+    return rag_studio.get_document_content(settings, document_id)
+
+
 @router.post("/rag-studio/proposals/{proposal_id}/investigate")
 def admin_rag_studio_investigate(proposal_id: str, payload: RagStudioInvestigateRequest, request: Request):
     settings = _settings()
@@ -1304,6 +1362,26 @@ def admin_rag_studio_ignore_context_document(context_id: str, request: Request):
     return {"context_document": context_doc, "proposal": proposal}
 
 
+@router.get("/rag-studio/context-documents/{context_id}")
+def admin_rag_studio_get_context_document(context_id: str, request: Request):
+    settings = _settings()
+    _require_admin(request, settings)
+    context_doc = rag_studio.get_context_document(settings, context_id, include_text=True)
+    if not context_doc:
+        raise AppError("context_document_not_found", "Documento contextual nao encontrado.", 404)
+    return {"context_document": context_doc}
+
+
+@router.post("/rag-studio/context-documents/{context_id}/restore")
+def admin_rag_studio_restore_context_document(context_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    context_doc = rag_studio.restore_context_document(settings, context_id)
+    proposal = rag_studio.get_proposal(settings, str(context_doc["proposal_id"]))
+    log_event(settings, "admin_rag_studio_context_restore", request=request, session_id=user.login, actor_type="admin", payload={"context_id": context_id})
+    return {"context_document": context_doc, "proposal": proposal}
+
+
 @router.delete("/rag-studio/context-documents/{context_id}")
 def admin_rag_studio_delete_context_document(context_id: str, request: Request):
     settings = _settings()
@@ -1380,6 +1458,38 @@ def admin_rag_studio_apply_patch(patch_id: str, request: Request):
     return {"proposal": proposal, "commit": commit.model_dump()}
 
 
+@router.post("/rag-studio/patches/{patch_id}/discard")
+def admin_rag_studio_discard_patch(patch_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    proposal = rag_studio.discard_patch(settings, patch_id)
+    log_event(
+        settings,
+        "admin_rag_studio_patch_discard",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"patch_id": patch_id, "proposal_id": proposal.get("id")},
+    )
+    return proposal
+
+
+@router.post("/rag-studio/patches/{patch_id}/reverse-proposal")
+def admin_rag_studio_reverse_patch(patch_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    proposal = rag_studio.create_reverse_proposal_from_patch(settings, patch_id)
+    log_event(
+        settings,
+        "admin_rag_studio_reverse_proposal",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"patch_id": patch_id, "proposal_id": proposal.get("id")},
+    )
+    return proposal
+
+
 @router.post("/rag-studio/documents/{document_id}/ignore")
 def admin_rag_studio_ignore_document(document_id: str, payload: RagStudioArchiveRequest, request: Request):
     settings = _settings()
@@ -1388,6 +1498,22 @@ def admin_rag_studio_ignore_document(document_id: str, payload: RagStudioArchive
     log_event(
         settings,
         "admin_rag_studio_document_ignore",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"document_id": document_id, "proposal_id": proposal.get("id")},
+    )
+    return proposal
+
+
+@router.post("/rag-studio/documents/{document_id}/restore")
+def admin_rag_studio_restore_document(document_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    proposal = rag_studio.restore_document(settings, document_id)
+    log_event(
+        settings,
+        "admin_rag_studio_document_restore",
         request=request,
         session_id=user.login,
         actor_type="admin",

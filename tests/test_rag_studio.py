@@ -160,6 +160,88 @@ def test_regenerated_patch_supersedes_previous_version(tmp_path: Path):
     assert any(patch["id"] == first_patch_id and patch["status"] == "superseded" for patch in patches)
 
 
+def test_restore_document_decisions_and_discard_patch(tmp_path: Path):
+    settings = _settings(tmp_path)
+    _write_md(settings.resolved_knowledge_dir, "skills/hard-skills.md")
+    proposal = rag_studio.create_proposal(settings, {"title": "Rollback", "question": "Stack"})
+    proposal = rag_studio.add_documents(settings, proposal["id"], ["knowledge/skills/hard-skills.md"])
+    document_id = proposal["documents"][0]["id"]
+
+    restored_selection = rag_studio.restore_document(settings, document_id)
+    assert restored_selection["documents"][0]["status"] == "candidate"
+    assert restored_selection["events"][-1]["kind"] == "document_restored"
+
+    proposal = rag_studio.add_documents(settings, proposal["id"], ["knowledge/skills/hard-skills.md"])
+    ignored = rag_studio.ignore_document(settings, document_id, "Sem ajuste necessario.")
+    assert ignored["documents"][0]["status"] == "ignored"
+
+    restored_ignore = rag_studio.restore_document(settings, document_id)
+    assert restored_ignore["documents"][0]["status"] == "selected"
+    assert restored_ignore["events"][-1]["kind"] == "document_restored"
+
+    patched = rag_studio.generate_patch(settings, document_id, "Adicionar SQL se documentado.")
+    patch_id = patched["documents"][0]["patches"][0]["id"]
+    discarded = rag_studio.discard_patch(settings, patch_id)
+
+    assert discarded["documents"][0]["status"] == "selected"
+    assert discarded["documents"][0]["patches"][0]["status"] == "discarded"
+    assert discarded["events"][-1]["kind"] == "patch_discarded"
+
+
+def test_restore_context_document_rolls_back_private_index(monkeypatch, tmp_path: Path):
+    settings = _settings(tmp_path)
+    proposal = rag_studio.create_proposal(settings, {"title": "Context rollback", "question": "Stack"})
+    context_doc = rag_studio.add_attachment(
+        settings,
+        proposal["id"],
+        filename="contexto.txt",
+        content_type="text/plain",
+        data="Contexto privado para teste.".encode("utf-8"),
+    )
+
+    approved = rag_studio.approve_context_document(settings, context_doc["id"])
+    assert approved["status"] == "approved"
+
+    monkeypatch.setattr(
+        rag_studio,
+        "index_context_document",
+        lambda _settings, document: {"indexed": True, "chunks": 1, "indexed_at": "2026-06-24T00:00:00+00:00"},
+    )
+    removed_chunks = []
+    monkeypatch.setattr(rag_studio, "remove_context_document_chunks", lambda _settings, context_id: removed_chunks.append(context_id))
+
+    indexed = rag_studio.index_approved_context_document(settings, context_doc["id"])
+    assert indexed["context_document"]["status"] == "indexed"
+
+    restored_from_index = rag_studio.restore_context_document(settings, context_doc["id"])
+    assert restored_from_index["status"] == "approved"
+    assert removed_chunks == [context_doc["id"]]
+
+    restored_from_approved = rag_studio.restore_context_document(settings, context_doc["id"])
+    assert restored_from_approved["status"] == "extracted"
+
+
+def test_reverse_proposal_is_created_after_applied_patch(monkeypatch, tmp_path: Path):
+    settings = _settings(tmp_path)
+    target = _write_md(settings.resolved_knowledge_dir, "skills/hard-skills.md")
+    proposal = rag_studio.create_proposal(settings, {"title": "Reverse", "question": "Stack"})
+    proposal = rag_studio.add_documents(settings, proposal["id"], ["knowledge/skills/hard-skills.md"])
+    document_id = proposal["documents"][0]["id"]
+    patched = rag_studio.generate_patch(settings, document_id, "Adicionar SQL se documentado.")
+    patch = patched["documents"][0]["patches"][0]
+
+    target.write_text(patch["proposed_content"], encoding="utf-8")
+    applied = rag_studio.mark_patch_applied(settings, patch["id"], "abc123")
+    assert applied["patches"][0]["status"] == "applied"
+
+    reverse = rag_studio.create_reverse_proposal_from_patch(settings, patch["id"])
+
+    assert reverse["origin_type"] == "reverse_patch"
+    assert reverse["documents"][0]["path"] == "knowledge/skills/hard-skills.md"
+    assert reverse["documents"][0]["patches"][0]["status"] == "proposed"
+    assert reverse["events"][-1]["kind"] == "reverse_proposal_created"
+
+
 def test_context_document_blocks_until_indexed_and_feeds_patch(monkeypatch, tmp_path: Path):
     settings = _settings(tmp_path)
     _write_md(settings.resolved_knowledge_dir, "skills/hard-skills.md")

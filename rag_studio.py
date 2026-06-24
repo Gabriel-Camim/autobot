@@ -217,7 +217,7 @@ def _normalize_repo_path(raw_path: str) -> str:
     if path.parts[0] != "knowledge":
         path = PurePosixPath("knowledge") / path
     parts = path.parts
-    if len(parts) > 1 and parts[1] in {"_drafts", "_context"}:
+    if len(parts) > 1 and parts[1] in {"_drafts", "_context", "_system"}:
         raise AppError("invalid_path", "Arquivos privados do RAG Studio nao sao documentos canonicos.", 400)
     return path.as_posix()
 
@@ -671,6 +671,45 @@ def get_proposal(settings: Settings, proposal_id: str) -> Optional[Dict[str, Any
             return _hydrate_proposal(conn, settings, proposal_id)
 
 
+def get_case_file(settings: Settings, proposal_id: str) -> Dict[str, Any]:
+    proposal = get_proposal(settings, proposal_id)
+    if not proposal:
+        raise AppError("proposal_not_found", "Proposta nao encontrada.", 404)
+    documents = []
+    for doc in proposal.get("documents") or []:
+        item = dict(doc)
+        try:
+            item["current_content"] = _read_canonical_markdown(settings, str(doc.get("path") or ""))
+        except AppError as exc:
+            item["current_content_error"] = exc.message
+        documents.append(item)
+    proposal["documents"] = documents
+    return proposal
+
+
+def get_document_content(settings: Settings, document_id: str) -> Dict[str, Any]:
+    with _lock:
+        with _connect(settings) as conn:
+            document = _document_query(conn, settings, document_id)
+            if not document:
+                raise AppError("change_document_not_found", "Documento da proposta nao encontrado.", 404)
+            proposal = _proposal_query(conn, settings, str(document["proposal_id"]))
+            patches = [
+                _patch_from_row(row)
+                for row in conn.execute(
+                    f"SELECT * FROM rag_change_patches WHERE document_id = {_placeholder(settings)} ORDER BY created_at DESC",
+                    (document_id,),
+                ).fetchall()
+            ]
+    content = _read_canonical_markdown(settings, str(document.get("path") or ""))
+    return {
+        "document": {**document, "patches": [patch for patch in patches if patch]},
+        "proposal": proposal,
+        "current_content": content,
+        "current_hash": _content_hash(content),
+    }
+
+
 def _source_to_repo_path(source: str) -> Optional[str]:
     clean = (source or "").replace("\\", "/").strip("/")
     if not clean:
@@ -679,7 +718,7 @@ def _source_to_repo_path(source: str) -> Optional[str]:
         repo_path = clean
     else:
         repo_path = f"knowledge/{clean}"
-    if any(token in repo_path for token in ["/_drafts/", "/_context/"]) or repo_path.endswith(("/_drafts", "/_context")):
+    if any(token in repo_path for token in ["/_drafts/", "/_context/", "/_system/"]) or repo_path.endswith(("/_drafts", "/_context", "/_system")):
         return None
     if not repo_path.lower().endswith(".md"):
         return None
@@ -1059,9 +1098,10 @@ def approve_context_document(settings: Settings, context_id: str) -> Dict[str, A
             item = _attachment_from_row(row)
             if item.get("status") == "ignored":
                 raise AppError("context_document_ignored", "Documento contextual ignorado nao pode ser aprovado.", 409)
+            metadata = {**(item.get("metadata") or {}), "previous_status": item.get("status") or "extracted"}
             conn.execute(
-                f"UPDATE rag_change_attachments SET status = {marker}, indexed_at = NULL, ignored_at = NULL WHERE id = {marker}",
-                ("approved", context_id),
+                f"UPDATE rag_change_attachments SET status = {marker}, indexed_at = NULL, ignored_at = NULL, metadata_json = {marker} WHERE id = {marker}",
+                ("approved", _safe_json(metadata), context_id),
             )
             _record_event(
                 conn,
@@ -1111,9 +1151,10 @@ def ignore_context_document(settings: Settings, context_id: str) -> Dict[str, An
     marker = _placeholder(settings)
     with _lock:
         with _connect(settings) as conn:
+            metadata = {**(document.get("metadata") or {}), "previous_status": document.get("status") or "extracted"}
             conn.execute(
-                f"UPDATE rag_change_attachments SET status = {marker}, ignored_at = {marker}, indexed_at = NULL WHERE id = {marker}",
-                ("ignored", _now(), context_id),
+                f"UPDATE rag_change_attachments SET status = {marker}, ignored_at = {marker}, indexed_at = NULL, metadata_json = {marker} WHERE id = {marker}",
+                ("ignored", _now(), _safe_json(metadata), context_id),
             )
             _record_event(
                 conn,
@@ -1122,6 +1163,43 @@ def ignore_context_document(settings: Settings, context_id: str) -> Dict[str, An
                 "context_document_ignored",
                 "Documento contextual ignorado para esta proposta.",
                 {"context_id": context_id},
+            )
+            updated = _attachment_from_row(conn.execute(f"SELECT * FROM rag_change_attachments WHERE id = {marker}", (context_id,)).fetchone())
+    return _attachment_public(updated)
+
+
+def restore_context_document(settings: Settings, context_id: str) -> Dict[str, Any]:
+    document = get_context_document(settings, context_id, include_text=True)
+    if not document:
+        raise AppError("context_document_not_found", "Documento contextual nao encontrado.", 404)
+    current_status = str(document.get("status") or "extracted")
+    metadata = dict(document.get("metadata") or {})
+    if current_status == "indexed":
+        remove_context_document_chunks(settings, context_id)
+        next_status = "approved"
+    elif current_status == "approved":
+        next_status = "extracted"
+    elif current_status == "ignored":
+        next_status = str(metadata.get("previous_status") or "extracted")
+        if next_status == "indexed":
+            next_status = "approved"
+    else:
+        raise AppError("context_restore_not_available", "Este documento contextual ainda nao tem uma etapa reversivel.", 409)
+    metadata["restored_from"] = current_status
+    marker = _placeholder(settings)
+    with _lock:
+        with _connect(settings) as conn:
+            conn.execute(
+                f"UPDATE rag_change_attachments SET status = {marker}, ignored_at = NULL, indexed_at = NULL, metadata_json = {marker} WHERE id = {marker}",
+                (next_status, _safe_json(metadata), context_id),
+            )
+            _record_event(
+                conn,
+                settings,
+                str(document["proposal_id"]),
+                "context_restored",
+                "Etapa do documento contextual desfeita.",
+                {"context_id": context_id, "from": current_status, "to": next_status},
             )
             updated = _attachment_from_row(conn.execute(f"SELECT * FROM rag_change_attachments WHERE id = {marker}", (context_id,)).fetchone())
     return _attachment_public(updated)
@@ -1398,6 +1476,40 @@ def mark_patch_applied(settings: Settings, patch_id: str, commit_sha: Optional[s
             return _hydrate_proposal(conn, settings, str(patch["proposal_id"])) or patch
 
 
+def discard_patch(settings: Settings, patch_id: str) -> Dict[str, Any]:
+    marker = _placeholder(settings)
+    with _lock:
+        with _connect(settings) as conn:
+            patch = _patch_query(conn, settings, patch_id)
+            if not patch:
+                raise AppError("change_patch_not_found", "Patch nao encontrado.", 404)
+            if patch.get("status") != "proposed":
+                raise AppError("patch_discard_not_available", "Apenas diffs propostos podem ser descartados.", 409)
+            conn.execute(
+                f"UPDATE rag_change_patches SET status = {marker}, updated_at = {marker} WHERE id = {marker}",
+                ("discarded", _now(), patch_id),
+            )
+            active_patch = conn.execute(
+                f"SELECT id FROM rag_change_patches WHERE document_id = {marker} AND status = {marker} LIMIT 1",
+                (patch["document_id"], "proposed"),
+            ).fetchone()
+            if not active_patch:
+                conn.execute(
+                    f"UPDATE rag_change_documents SET status = {marker}, updated_at = {marker} WHERE id = {marker} AND status = {marker}",
+                    ("selected", _now(), patch["document_id"], "patch_ready"),
+                )
+            _update_proposal_status(conn, settings, str(patch["proposal_id"]), "documents_selected")
+            _record_event(
+                conn,
+                settings,
+                str(patch["proposal_id"]),
+                "patch_discarded",
+                "Diff descartado antes de aplicar no Git.",
+                {"patch_id": patch_id, "document_id": patch["document_id"]},
+            )
+            return _hydrate_proposal(conn, settings, str(patch["proposal_id"])) or patch
+
+
 def _maybe_mark_applied(conn, settings: Settings, proposal_id: str) -> None:
     marker = _placeholder(settings)
     docs = [
@@ -1418,7 +1530,7 @@ def ignore_document(settings: Settings, document_id: str, reason: Optional[str] 
             doc = _document_query(conn, settings, document_id)
             if not doc:
                 raise AppError("change_document_not_found", "Documento da proposta nao encontrado.", 404)
-            payload = {**(doc.get("payload") or {}), "ignore_reason": reason}
+            payload = {**(doc.get("payload") or {}), "ignore_reason": reason, "previous_status": doc.get("status")}
             conn.execute(
                 f"UPDATE rag_change_documents SET status = {marker}, updated_at = {marker}, payload_json = {marker} WHERE id = {marker}",
                 ("ignored", _now(), _safe_json(payload), document_id),
@@ -1426,6 +1538,126 @@ def ignore_document(settings: Settings, document_id: str, reason: Optional[str] 
             _record_event(conn, settings, str(doc["proposal_id"]), "document_ignored", "Documento ignorado para esta proposta.", {"document_id": document_id, "reason": reason})
             _maybe_mark_applied(conn, settings, str(doc["proposal_id"]))
             return _hydrate_proposal(conn, settings, str(doc["proposal_id"])) or doc
+
+
+def restore_document(settings: Settings, document_id: str) -> Dict[str, Any]:
+    marker = _placeholder(settings)
+    with _lock:
+        with _connect(settings) as conn:
+            doc = _document_query(conn, settings, document_id)
+            if not doc:
+                raise AppError("change_document_not_found", "Documento da proposta nao encontrado.", 404)
+            current_status = str(doc.get("status") or "")
+            if current_status == "ignored":
+                next_status = str((doc.get("payload") or {}).get("previous_status") or "candidate")
+                if next_status in {"applied", "ignored", "patch_ready"}:
+                    next_status = "selected"
+            elif current_status == "selected":
+                next_status = "candidate"
+            else:
+                raise AppError("document_restore_not_available", "Este documento nao tem uma etapa reversivel agora.", 409)
+            payload = {**(doc.get("payload") or {}), "restored_from": current_status}
+            conn.execute(
+                f"UPDATE rag_change_documents SET status = {marker}, updated_at = {marker}, payload_json = {marker} WHERE id = {marker}",
+                (next_status, _now(), _safe_json(payload), document_id),
+            )
+            _update_proposal_status(conn, settings, str(doc["proposal_id"]), "documents_selected" if next_status == "selected" else "investigating")
+            _record_event(
+                conn,
+                settings,
+                str(doc["proposal_id"]),
+                "document_restored",
+                "Decisao sobre documento desfeita.",
+                {"document_id": document_id, "from": current_status, "to": next_status},
+            )
+            return _hydrate_proposal(conn, settings, str(doc["proposal_id"])) or doc
+
+
+def create_reverse_proposal_from_patch(settings: Settings, patch_id: str) -> Dict[str, Any]:
+    marker = _placeholder(settings)
+    with _lock:
+        with _connect(settings) as conn:
+            patch = _patch_query(conn, settings, patch_id)
+            if not patch:
+                raise AppError("change_patch_not_found", "Patch nao encontrado.", 404)
+            if patch.get("status") != "applied":
+                raise AppError("reverse_requires_applied_patch", "Somente patches ja aplicados geram proposta reversa.", 409)
+            original_proposal = _proposal_query(conn, settings, str(patch["proposal_id"])) or {}
+    current_content = _read_canonical_markdown(settings, str(patch["target_path"]))
+    reverse = create_proposal(
+        settings,
+        {
+            "title": f"Reverter alteracao: {patch.get('target_path')}",
+            "origin_type": "reverse_patch",
+            "origin_id": patch_id,
+            "problem_statement": "Revisar reversao de patch canonico aplicado anteriormente.",
+            "question": original_proposal.get("question") or original_proposal.get("problem_statement"),
+            "active_context": original_proposal.get("active_context"),
+            "source_patch_id": patch_id,
+        },
+    )
+    reverse_with_doc = add_documents(settings, str(reverse["id"]), [str(patch["target_path"])])
+    reverse_documents = reverse_with_doc.get("documents") or []
+    reverse_document_id = str(reverse_documents[0].get("id") or "") if reverse_documents else ""
+    diff = _diff_text(str(patch["target_path"]), current_content, str(patch.get("original_content") or ""))
+    reverse_patch = {
+        "id": str(uuid4()),
+        "proposal_id": reverse["id"],
+        "document_id": reverse_document_id,
+        "created_at": _now(),
+        "updated_at": _now(),
+        "status": "proposed",
+        "target_path": patch["target_path"],
+        "original_content": current_content,
+        "proposed_content": patch.get("original_content") or "",
+        "diff_text": diff,
+        "rationale": f"Proposta reversa do patch {patch_id}.",
+        "model": "reverse-proposal",
+        "commit_sha": None,
+        "payload": {"source_patch_id": patch_id},
+    }
+    if not reverse_patch["document_id"]:
+        raise AppError("reverse_document_missing", "Nao consegui criar documento alvo da proposta reversa.", 500)
+    with _lock:
+        with _connect(settings) as conn:
+            conn.execute(
+                f"""
+                INSERT INTO rag_change_patches
+                (id, proposal_id, document_id, created_at, updated_at, status, target_path, original_content,
+                 proposed_content, diff_text, rationale, model, commit_sha, payload_json)
+                VALUES ({",".join([marker] * 14)})
+                """,
+                (
+                    reverse_patch["id"],
+                    reverse_patch["proposal_id"],
+                    reverse_patch["document_id"],
+                    reverse_patch["created_at"],
+                    reverse_patch["updated_at"],
+                    reverse_patch["status"],
+                    reverse_patch["target_path"],
+                    reverse_patch["original_content"],
+                    reverse_patch["proposed_content"],
+                    reverse_patch["diff_text"],
+                    reverse_patch["rationale"],
+                    reverse_patch["model"],
+                    reverse_patch["commit_sha"],
+                    _safe_json(reverse_patch["payload"]),
+                ),
+            )
+            conn.execute(
+                f"UPDATE rag_change_documents SET status = {marker}, updated_at = {marker} WHERE id = {marker}",
+                ("patch_ready", _now(), reverse_patch["document_id"]),
+            )
+            _update_proposal_status(conn, settings, str(reverse["id"]), "patch_ready")
+            _record_event(
+                conn,
+                settings,
+                str(reverse["id"]),
+                "reverse_proposal_created",
+                "Proposta reversa criada para revisao humana.",
+                {"source_patch_id": patch_id, "patch_id": reverse_patch["id"]},
+            )
+            return _hydrate_proposal(conn, settings, str(reverse["id"])) or reverse
 
 
 def record_validation(settings: Settings, proposal_id: str, validation: Dict[str, Any]) -> Dict[str, Any]:
