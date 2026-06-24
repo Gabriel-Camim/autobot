@@ -5,6 +5,7 @@ import json
 import logging
 import re
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Tuple
 
 from langchain_core.documents import Document
@@ -32,6 +33,15 @@ def _table_name(settings: Settings) -> str:
     if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", table):
         raise RuntimeError("PGVECTOR_TABLE invalida. Use apenas letras, numeros e underscore.")
     return table
+
+
+def pgvector_index_type(settings: Settings) -> str:
+    """Return the index strategy that is valid for the configured vector dimension."""
+    try:
+        dimension = int(settings.pgvector_dimension)
+    except (TypeError, ValueError):
+        return "none"
+    return "hnsw" if dimension <= 2000 else "exact"
 
 
 def _connect(settings: Settings):
@@ -91,18 +101,26 @@ def ensure_pgvector_schema(settings: Settings) -> None:
         conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_source ON {table}(source)")
         conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_category ON {table}(category)")
         conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_reindexed_at ON {table}(reindexed_at)")
-        try:
-            conn.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{table}_embedding_hnsw "
-                f"ON {table} USING hnsw (embedding vector_cosine_ops)"
-            )
-        except Exception:
-            logger.warning("pgvector_hnsw_index_unavailable", exc_info=True)
+        if pgvector_index_type(settings) == "hnsw":
+            try:
+                conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS idx_{table}_embedding_hnsw "
+                    f"ON {table} USING hnsw (embedding vector_cosine_ops)"
+                )
+            except Exception:
+                logger.warning("pgvector_hnsw_index_unavailable", exc_info=True)
 
 
 def pgvector_status(settings: Settings) -> Dict[str, Any]:
     if not uses_pgvector(settings):
-        return {"backend": settings.vector_backend, "ready": False, "chunks": 0, "last_reindex_at": None, "error": None}
+        return {
+            "backend": settings.vector_backend,
+            "ready": False,
+            "chunks": 0,
+            "last_reindex_at": None,
+            "error": None,
+            "index_type": "none",
+        }
     try:
         ensure_pgvector_schema(settings)
         table = _table_name(settings)
@@ -115,10 +133,18 @@ def pgvector_status(settings: Settings) -> Dict[str, Any]:
             "chunks": chunks,
             "last_reindex_at": str(row.get("last_reindex_at")) if row.get("last_reindex_at") else None,
             "error": None,
+            "index_type": pgvector_index_type(settings),
         }
     except Exception as exc:
         logger.exception("pgvector_status_failed")
-        return {"backend": "pgvector", "ready": False, "chunks": 0, "last_reindex_at": None, "error": str(exc)[:240]}
+        return {
+            "backend": "pgvector",
+            "ready": False,
+            "chunks": 0,
+            "last_reindex_at": None,
+            "error": str(exc)[:240],
+            "index_type": pgvector_index_type(settings),
+        }
 
 
 def pgvector_index_documents(settings: Settings, chunks: List[Document]) -> int:
@@ -193,7 +219,8 @@ def pgvector_similarity_search(
     with _connect(settings) as conn:
         rows = conn.execute(
             f"""
-            SELECT content, metadata_json, embedding <=> %s::vector AS distance
+            SELECT id, content_hash, source, title, category, tags, priority, updated_at, summary,
+                   content, metadata_json, embedding <=> %s::vector AS distance
             FROM {table}
             ORDER BY embedding <=> %s::vector
             LIMIT %s
@@ -207,5 +234,22 @@ def pgvector_similarity_search(
             metadata = json.loads(row.get("metadata_json") or "{}")
         except json.JSONDecodeError:
             metadata = {}
+        source = str(row.get("source") or metadata.get("source") or "")
+        metadata.update(
+            {
+                "source": source,
+                "title": row.get("title") or metadata.get("title"),
+                "category": row.get("category") or metadata.get("category"),
+                "tags": row.get("tags") or metadata.get("tags"),
+                "priority": row.get("priority") if row.get("priority") is not None else metadata.get("priority"),
+                "updated_at": row.get("updated_at") or metadata.get("updated_at"),
+                "summary": row.get("summary") or metadata.get("summary"),
+                "_chunk_id": row.get("id"),
+                "_content_hash": row.get("content_hash"),
+                "_directory": str(Path(source).parent).replace("\\", "/") if source else "",
+                "_pgvector_distance": float(row.get("distance") or 0.0),
+                "_pgvector_index_type": pgvector_index_type(settings),
+            }
+        )
         results.append((Document(page_content=row.get("content") or "", metadata=metadata), float(row.get("distance") or 0.0)))
     return results

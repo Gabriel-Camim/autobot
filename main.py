@@ -305,7 +305,7 @@ def health():
     vector_status = (
         pgvector_status(settings)
         if uses_pgvector(settings)
-        else {"backend": "chroma", "ready": chroma_exists, "chunks": None, "last_reindex_at": None, "error": None}
+        else {"backend": "chroma", "ready": chroma_exists, "chunks": None, "last_reindex_at": None, "error": None, "index_type": "none"}
     )
     return {
         "status": "ok",
@@ -316,6 +316,7 @@ def health():
         "rag_auto_reindex_on_missing": settings.rag_auto_reindex_on_missing,
         "vector_backend": vector_status["backend"],
         "vector_index_ready": vector_status["ready"],
+        "vector_index_type": vector_status.get("index_type"),
         "vector_chunks": vector_status["chunks"],
         "last_reindex_at": vector_status["last_reindex_at"],
         "vector_error": vector_status["error"],

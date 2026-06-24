@@ -53,6 +53,12 @@ class RagEvidence:
     relevance_score: float
     match_reason: str
     bridge_ids: List[str] = field(default_factory=list)
+    chunk_id: Optional[str] = None
+    content_hash: Optional[str] = None
+    directory: Optional[str] = None
+    base_relevance: Optional[float] = None
+    rerank_score: Optional[float] = None
+    semantic_bridges: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -666,6 +672,12 @@ def _evidence_from_doc(doc: Document, score: float, query: str, active_node: Opt
         relevance_score=round(relevance, 4),
         match_reason=str(metadata.get("_retrieval_match_reason") or _match_reason(doc, query, active_node, channel, relevance)),
         bridge_ids=[str(item) for item in bridge_ids],
+        chunk_id=metadata.get("_chunk_id"),
+        content_hash=metadata.get("_content_hash"),
+        directory=metadata.get("_directory"),
+        base_relevance=metadata.get("_retrieval_base_relevance_score"),
+        rerank_score=metadata.get("_retrieval_rerank_score"),
+        semantic_bridges=[str(item) for item in bridge_ids],
     )
 
 
@@ -746,6 +758,10 @@ def _candidate_payload(
         "bridge_boost": bridge_score.get("boost") or 0.0,
         "match_reason": reason,
         "excerpt": _excerpt_for_query(doc.page_content, query, max_chars=260),
+        "chunk_id": metadata.get("_chunk_id"),
+        "content_hash": metadata.get("_content_hash"),
+        "directory": metadata.get("_directory"),
+        "semantic_bridges": bridge_ids,
     }
 
 

@@ -10,7 +10,7 @@ from langchain_openai import OpenAIEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from config import Settings
-from pgvector_store import uses_pgvector
+from pgvector_store import pgvector_index_type, uses_pgvector
 
 
 CONTEXT_TABLE = "rag_studio_context_chunks"
@@ -61,14 +61,15 @@ def ensure_context_schema(settings: Settings) -> None:
         )
         conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{CONTEXT_TABLE}_proposal ON {CONTEXT_TABLE}(proposal_id)")
         conn.execute(f"CREATE INDEX IF NOT EXISTS idx_{CONTEXT_TABLE}_context ON {CONTEXT_TABLE}(context_id)")
-        try:
-            conn.execute(
-                f"CREATE INDEX IF NOT EXISTS idx_{CONTEXT_TABLE}_embedding_hnsw "
-                f"ON {CONTEXT_TABLE} USING hnsw (embedding vector_cosine_ops)"
-            )
-        except Exception:
-            # HNSW may be unavailable in local/test Postgres; exact search still works.
-            pass
+        if pgvector_index_type(settings) == "hnsw":
+            try:
+                conn.execute(
+                    f"CREATE INDEX IF NOT EXISTS idx_{CONTEXT_TABLE}_embedding_hnsw "
+                    f"ON {CONTEXT_TABLE} USING hnsw (embedding vector_cosine_ops)"
+                )
+            except Exception:
+                # HNSW may be unavailable in local/test Postgres; exact search still works.
+                pass
 
 
 def _chunk_id(context_id: str, content: str, index: int) -> str:
@@ -157,7 +158,7 @@ def search_context_documents(settings: Settings, proposal_id: str, query: str, l
     with _connect(settings) as conn:
         rows = conn.execute(
             f"""
-            SELECT context_id, source, title, content, metadata_json, embedding <=> %s::vector AS distance
+            SELECT id, context_id, source, title, content, metadata_json, embedding <=> %s::vector AS distance
             FROM {CONTEXT_TABLE}
             WHERE proposal_id = %s
             ORDER BY embedding <=> %s::vector
@@ -177,6 +178,7 @@ def search_context_documents(settings: Settings, proposal_id: str, query: str, l
                 "context_id": row.get("context_id"),
                 "source": row.get("source"),
                 "title": row.get("title"),
+                "chunk_id": row.get("id"),
                 "excerpt": re.sub(r"\s+", " ", row.get("content") or "").strip()[:900],
                 "distance": distance,
                 "relevance_score": round(max(0.0, 1.0 - min(distance, 2.0) / 2.0), 4),

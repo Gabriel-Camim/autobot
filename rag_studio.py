@@ -728,6 +728,66 @@ def _source_to_repo_path(source: str) -> Optional[str]:
         return None
 
 
+def _curation_history_for_path(settings: Settings, repo_path: str, limit: int = 8) -> List[Dict[str, Any]]:
+    try:
+        normalized = _normalize_repo_path(repo_path)
+    except AppError:
+        return []
+    marker = _placeholder(settings)
+    try:
+        with _connect(settings) as conn:
+            rows = conn.execute(
+                f"""
+                SELECT p.id AS patch_id, p.proposal_id, p.created_at, p.updated_at, p.status,
+                       p.target_path, p.rationale, p.model, p.commit_sha,
+                       c.title AS proposal_title, c.origin_type, c.origin_id
+                FROM rag_change_patches p
+                LEFT JOIN rag_change_proposals c ON c.id = p.proposal_id
+                WHERE p.target_path = {marker} AND p.status = {marker}
+                ORDER BY p.updated_at DESC
+                LIMIT {marker}
+                """,
+                (normalized, "applied", max(1, int(limit))),
+            ).fetchall()
+    except Exception:
+        return []
+    history: List[Dict[str, Any]] = []
+    for row in rows:
+        data = dict(row)
+        history.append(
+            {
+                "patch_id": data.get("patch_id"),
+                "proposal_id": data.get("proposal_id"),
+                "proposal_title": data.get("proposal_title"),
+                "origin_type": data.get("origin_type"),
+                "origin_id": data.get("origin_id"),
+                "target_path": data.get("target_path"),
+                "rationale": data.get("rationale"),
+                "model": data.get("model"),
+                "commit_sha": data.get("commit_sha"),
+                "created_at": str(data.get("created_at")),
+                "updated_at": str(data.get("updated_at")),
+            }
+        )
+    return history
+
+
+def _enrich_probe_evidence(settings: Settings, evidence: List[Any]) -> List[Dict[str, Any]]:
+    enriched: List[Dict[str, Any]] = []
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        payload = dict(item)
+        repo_path = _source_to_repo_path(str(payload.get("source") or ""))
+        if repo_path:
+            payload["repo_path"] = repo_path
+            payload.setdefault("directory", str(PurePosixPath(repo_path).parent))
+            payload["curation_history"] = _curation_history_for_path(settings, repo_path)
+        payload.setdefault("semantic_bridges", payload.get("bridge_ids") or [])
+        enriched.append(payload)
+    return enriched
+
+
 def investigate_proposal(
     settings: Settings,
     proposal_id: str,
@@ -747,7 +807,8 @@ def investigate_proposal(
         raise AppError("empty_investigation", "Informe uma pergunta ou problema para investigar.", 400)
     context = active_context if active_context is not None else proposal.get("active_context")
     probe = build_rag_probe(settings, clean_question, context, limit=limit)
-    evidence = probe.get("evidence") or []
+    evidence = _enrich_probe_evidence(settings, probe.get("evidence") or [])
+    probe["evidence"] = evidence
     suggested_docs: Dict[str, Dict[str, Any]] = {}
     for item in evidence:
         if not isinstance(item, dict):
@@ -1447,7 +1508,9 @@ def generate_patch(settings: Settings, document_id: str, instruction: str) -> Di
                 "Diff gerado para revisao humana.",
                 {"document_id": document_id, "patch_id": patch["id"], "context_document_ids": context_document_ids},
             )
-            return _hydrate_proposal(conn, settings, str(patch["proposal_id"])) or patch
+            hydrated = _hydrate_proposal(conn, settings, str(patch["proposal_id"])) or patch
+            hydrated["new_patch_id"] = patch["id"]
+            return hydrated
 
 
 def get_patch(settings: Settings, patch_id: str) -> Optional[Dict[str, Any]]:

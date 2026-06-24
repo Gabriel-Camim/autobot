@@ -635,7 +635,7 @@ def admin_bootstrap(request: Request):
     vector_status = (
         pgvector_status(settings)
         if uses_pgvector(settings)
-        else {"backend": "chroma", "ready": False, "chunks": None, "last_reindex_at": None, "error": None}
+        else {"backend": "chroma", "ready": False, "chunks": None, "last_reindex_at": None, "error": None, "index_type": "none"}
     )
     return {
         "session": {
@@ -655,6 +655,7 @@ def admin_bootstrap(request: Request):
         "rag": {
             "vector_backend": vector_status.get("backend"),
             "vector_index_ready": vector_status.get("ready"),
+            "vector_index_type": vector_status.get("index_type"),
             "vector_chunks": vector_status.get("chunks"),
             "last_reindex_at": vector_status.get("last_reindex_at"),
             "vector_error": vector_status.get("error"),
@@ -893,12 +894,13 @@ def _reindex_diagnostics(settings: Settings, docs: List[Any]) -> Dict[str, Any]:
     vector_status = (
         pgvector_status(settings)
         if uses_pgvector(settings)
-        else {"backend": "chroma", "ready": True, "chunks": None, "last_reindex_at": None, "error": None}
+        else {"backend": "chroma", "ready": True, "chunks": None, "last_reindex_at": None, "error": None, "index_type": "none"}
     )
     sample_query, expected_source = _document_sample_query(docs)
     diagnostics: Dict[str, Any] = {
         "vector_backend": vector_status.get("backend"),
         "vector_ready": vector_status.get("ready"),
+        "vector_index_type": vector_status.get("index_type"),
         "vector_chunks": vector_status.get("chunks"),
         "last_reindex_at": vector_status.get("last_reindex_at"),
         "sample_query": sample_query,

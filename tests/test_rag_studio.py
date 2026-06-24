@@ -131,6 +131,7 @@ def test_generate_patch_fallback_and_resolve_requires_validation(tmp_path: Path)
     patch = updated["patches"][0]
 
     assert patch["status"] == "proposed"
+    assert updated["new_patch_id"] == patch["id"]
     assert "+## Atualizacao proposta pelo RAG Studio" in patch["diff_text"]
     with pytest.raises(AppError):
         rag_studio.resolve_proposal(settings, proposal["id"])
@@ -155,6 +156,7 @@ def test_regenerated_patch_supersedes_previous_version(tmp_path: Path):
     patches = second["documents"][0]["patches"]
 
     assert patches[0]["id"] != first_patch_id
+    assert second["new_patch_id"] == patches[0]["id"]
     assert patches[0]["status"] == "proposed"
     assert patches[0]["payload"]["instruction"] == "Adicionar SQL e metodologias ageis."
     assert any(patch["id"] == first_patch_id and patch["status"] == "superseded" for patch in patches)
