@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import difflib
 import hashlib
+import io
 import json
 import re
 import sqlite3
@@ -23,6 +24,9 @@ from rag_quality import get_rag_feedback, get_rag_trace, list_rag_feedback, tria
 _lock = threading.Lock()
 OPEN_STATUSES = {"open", "investigating", "documents_selected", "patch_ready", "applied", "validating"}
 DOC_DONE_STATUSES = {"applied", "ignored"}
+ALLOWED_ATTACHMENT_SUFFIXES = {".md", ".txt", ".json", ".pdf", ".docx"}
+MAX_ATTACHMENTS_PER_PROPOSAL = 5
+MAX_ATTACHMENT_MB = 10
 
 
 def _now() -> str:
@@ -370,6 +374,14 @@ def _attachment_from_row(row: Any) -> Dict[str, Any]:
     }
 
 
+def _attachment_public(item: Dict[str, Any]) -> Dict[str, Any]:
+    output = dict(item)
+    text = str(output.get("extracted_text") or "")
+    output["text_preview"] = text[:700]
+    output.pop("extracted_text", None)
+    return output
+
+
 def _record_event(conn, settings: Settings, proposal_id: str, kind: str, message: str, payload: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     marker = _placeholder(settings)
     event = {
@@ -435,7 +447,7 @@ def _hydrate_proposal(conn, settings: Settings, proposal_id: str) -> Optional[Di
     patches = [
         _patch_from_row(row)
         for row in conn.execute(
-            f"SELECT * FROM rag_change_patches WHERE proposal_id = {marker} ORDER BY created_at ASC",
+            f"SELECT * FROM rag_change_patches WHERE proposal_id = {marker} ORDER BY created_at DESC",
             (proposal_id,),
         ).fetchall()
     ]
@@ -449,7 +461,7 @@ def _hydrate_proposal(conn, settings: Settings, proposal_id: str) -> Optional[Di
     attachments = [
         _attachment_from_row(row)
         for row in conn.execute(
-            f"SELECT * FROM rag_change_attachments WHERE proposal_id = {marker} ORDER BY created_at ASC",
+            f"SELECT * FROM rag_change_attachments WHERE proposal_id = {marker} ORDER BY created_at DESC",
             (proposal_id,),
         ).fetchall()
     ]
@@ -463,7 +475,7 @@ def _hydrate_proposal(conn, settings: Settings, proposal_id: str) -> Optional[Di
     proposal["documents"] = [doc for doc in docs if doc]
     proposal["patches"] = [patch for patch in patches if patch]
     proposal["events"] = events
-    proposal["attachments"] = attachments
+    proposal["attachments"] = [_attachment_public(item) for item in attachments]
     proposal["timeline"] = _timeline(proposal)
     proposal["next_action"] = _next_action(proposal)
     return proposal
@@ -807,9 +819,167 @@ def add_documents(settings: Settings, proposal_id: str, paths: List[str]) -> Dic
             return _hydrate_proposal(conn, settings, proposal_id) or {}
 
 
-def _patch_prompt(proposal: Dict[str, Any], document: Dict[str, Any], original: str, instruction: str) -> str:
+def _count_attachments(conn, settings: Settings, proposal_id: str) -> int:
+    marker = _placeholder(settings)
+    row = conn.execute(f"SELECT COUNT(*) AS total FROM rag_change_attachments WHERE proposal_id = {marker}", (proposal_id,)).fetchone()
+    if isinstance(row, dict):
+        return int(row.get("total") or 0)
+    return int(row[0] if row else 0)
+
+
+def _extract_json_text(data: bytes) -> str:
+    parsed = json.loads(data.decode("utf-8"))
+    return json.dumps(parsed, ensure_ascii=False, indent=2)
+
+
+def _extract_pdf_text(data: bytes) -> str:
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise AppError("pdf_parser_missing", "Parser PDF indisponivel. Instale pypdf no backend.", 503) from exc
+    reader = PdfReader(io.BytesIO(data))
+    return "\n\n".join((page.extract_text() or "").strip() for page in reader.pages if (page.extract_text() or "").strip())
+
+
+def _extract_docx_text(data: bytes) -> str:
+    try:
+        import docx
+    except ImportError as exc:
+        raise AppError("docx_parser_missing", "Parser DOCX indisponivel. Instale python-docx no backend.", 503) from exc
+    document = docx.Document(io.BytesIO(data))
+    return "\n".join(paragraph.text for paragraph in document.paragraphs if paragraph.text.strip())
+
+
+def extract_attachment_text(filename: str, data: bytes) -> str:
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ALLOWED_ATTACHMENT_SUFFIXES:
+        raise AppError("unsupported_attachment", "Anexo precisa ser .md, .txt, .json, .pdf ou .docx.", 422)
+    if suffix in {".md", ".txt"}:
+        return data.decode("utf-8", errors="replace")
+    if suffix == ".json":
+        return _extract_json_text(data)
+    if suffix == ".pdf":
+        return _extract_pdf_text(data)
+    if suffix == ".docx":
+        return _extract_docx_text(data)
+    return ""
+
+
+def add_attachment(settings: Settings, proposal_id: str, *, filename: str, content_type: str, data: bytes) -> Dict[str, Any]:
+    safe_name = Path(filename or "attachment.txt").name
+    max_bytes = MAX_ATTACHMENT_MB * 1024 * 1024
+    if len(data) > max_bytes:
+        raise AppError("attachment_too_large", "Anexo maior que 10 MB.", 422)
+    extracted = extract_attachment_text(safe_name, data).strip()
+    if not extracted:
+        raise AppError("empty_attachment", "Nao consegui extrair texto deste anexo.", 422)
+    attachment = {
+        "id": str(uuid4()),
+        "proposal_id": proposal_id,
+        "document_id": None,
+        "created_at": _now(),
+        "filename": safe_name,
+        "content_type": content_type or "application/octet-stream",
+        "size_bytes": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "extracted_text": extracted[:120000],
+        "metadata": {"suffix": Path(safe_name).suffix.lower(), "truncated": len(extracted) > 120000},
+    }
+    marker = _placeholder(settings)
+    with _lock:
+        with _connect(settings) as conn:
+            proposal = _proposal_query(conn, settings, proposal_id)
+            if not proposal:
+                raise AppError("proposal_not_found", "Proposta nao encontrada.", 404)
+            if _count_attachments(conn, settings, proposal_id) >= MAX_ATTACHMENTS_PER_PROPOSAL:
+                raise AppError("too_many_attachments", "Limite de 5 anexos por proposta atingido.", 422)
+            conn.execute(
+                f"""
+                INSERT INTO rag_change_attachments
+                (id, proposal_id, document_id, created_at, filename, content_type, size_bytes, sha256, extracted_text, metadata_json)
+                VALUES ({",".join([marker] * 10)})
+                """,
+                (
+                    attachment["id"],
+                    attachment["proposal_id"],
+                    attachment["document_id"],
+                    attachment["created_at"],
+                    attachment["filename"],
+                    attachment["content_type"],
+                    attachment["size_bytes"],
+                    attachment["sha256"],
+                    attachment["extracted_text"],
+                    _safe_json(attachment["metadata"]),
+                ),
+            )
+            _record_event(
+                conn,
+                settings,
+                proposal_id,
+                "attachment_added",
+                "Anexo privado adicionado como contexto auxiliar.",
+                {"attachment_id": attachment["id"], "filename": safe_name, "size_bytes": len(data)},
+            )
+    return _attachment_public(attachment)
+
+
+def delete_attachment(settings: Settings, attachment_id: str) -> bool:
+    marker = _placeholder(settings)
+    with _lock:
+        with _connect(settings) as conn:
+            if _uses_postgres(settings):
+                row = conn.execute(f"DELETE FROM rag_change_attachments WHERE id = {marker} RETURNING proposal_id", (attachment_id,)).fetchone()
+                if row:
+                    proposal_id = dict(row).get("proposal_id")
+                    if proposal_id:
+                        _record_event(conn, settings, str(proposal_id), "attachment_deleted", "Anexo privado removido.", {"attachment_id": attachment_id})
+                return bool(row)
+            row = conn.execute(f"SELECT proposal_id FROM rag_change_attachments WHERE id = {marker}", (attachment_id,)).fetchone()
+            cursor = conn.execute(f"DELETE FROM rag_change_attachments WHERE id = {marker}", (attachment_id,))
+            if cursor.rowcount > 0 and row:
+                proposal_id = dict(row).get("proposal_id")
+                _record_event(conn, settings, str(proposal_id), "attachment_deleted", "Anexo privado removido.", {"attachment_id": attachment_id})
+            return cursor.rowcount > 0
+
+
+def _attachments_for_prompt(conn, settings: Settings, proposal_id: str, document_id: str) -> List[Dict[str, Any]]:
+    marker = _placeholder(settings)
+    rows = conn.execute(
+        f"""
+        SELECT * FROM rag_change_attachments
+        WHERE proposal_id = {marker} AND (document_id IS NULL OR document_id = {marker})
+        ORDER BY created_at DESC
+        """,
+        (proposal_id, document_id),
+    ).fetchall()
+    return [_attachment_from_row(row) for row in rows]
+
+
+def _attachment_prompt_block(attachments: List[Dict[str, Any]]) -> str:
+    if not attachments:
+        return "Nenhum anexo privado foi enviado."
+    blocks: List[str] = []
+    budget = 18000
+    for item in attachments:
+        text = str(item.get("extracted_text") or "").strip()
+        if not text or budget <= 0:
+            continue
+        slice_text = text[: min(6000, budget)]
+        budget -= len(slice_text)
+        blocks.append(f"[anexo: {item.get('filename')}]\n{slice_text}")
+    return "\n\n---\n\n".join(blocks) if blocks else "Nenhum texto util foi extraido dos anexos."
+
+
+def _patch_prompt(
+    proposal: Dict[str, Any],
+    document: Dict[str, Any],
+    original: str,
+    instruction: str,
+    attachments: Optional[List[Dict[str, Any]]] = None,
+) -> str:
     investigation = proposal.get("investigation") or {}
     evidence = document.get("evidence") or []
+    attachment_block = _attachment_prompt_block(attachments or [])
     return f"""
 Voce e um agente RAGOps que prepara alteracoes de Markdown para revisao humana.
 
@@ -819,6 +989,8 @@ Regras:
 - Preserve frontmatter YAML valido.
 - Retorne o Markdown completo em proposed_content.
 - Nao use marcadores de negrito com **.
+- Anexos privados sao contexto auxiliar. Se conflitarem com o Markdown atual, registre em conflicts.
+- Nao trate anexos como fonte publica ate Gabriel aprovar o diff.
 
 Problema/proposta:
 {proposal.get("problem_statement") or ""}
@@ -833,6 +1005,9 @@ Documento alvo: {document.get("path")}
 
 Evidencias recuperadas:
 {json.dumps(evidence, ensure_ascii=False, indent=2)[:7000]}
+
+Anexos privados:
+{attachment_block}
 
 Markdown atual:
 ```markdown
@@ -870,17 +1045,19 @@ def generate_patch(settings: Settings, document_id: str, instruction: str) -> Di
             proposal = _proposal_query(conn, settings, str(document.get("proposal_id")))
             if not proposal:
                 raise AppError("proposal_not_found", "Proposta nao encontrada.", 404)
+            attachments = _attachments_for_prompt(conn, settings, str(proposal["id"]), document_id)
     original = _read_canonical_markdown(settings, str(document["path"]))
     model = settings.openai_chat_model
     rationale = "Patch gerado por fallback deterministico."
-    payload: Dict[str, Any] = {"instruction": clean_instruction, "fallback": True, "conflicts": []}
+    attachment_ids = [item.get("id") for item in attachments if item.get("id")]
+    payload: Dict[str, Any] = {"instruction": clean_instruction, "fallback": True, "conflicts": [], "attachment_ids": attachment_ids}
     proposed = _fallback_proposed_content(original, clean_instruction)
     try:
         llm = _build_llm(settings)
         response = llm.invoke(
             [
                 SystemMessage(content="Voce e um agente RAGOps. Responda apenas JSON valido."),
-                HumanMessage(content=_patch_prompt(proposal, document, original, clean_instruction)),
+                HumanMessage(content=_patch_prompt(proposal, document, original, clean_instruction, attachments)),
             ]
         )
         parsed = _extract_json_object(_response_content_to_text(response.content))
@@ -891,6 +1068,7 @@ def generate_patch(settings: Settings, document_id: str, instruction: str) -> Di
                 "instruction": clean_instruction,
                 "fallback": False,
                 "conflicts": parsed.get("conflicts") if isinstance(parsed.get("conflicts"), list) else [],
+                "attachment_ids": attachment_ids,
             }
     except Exception as exc:
         payload["agent_error"] = str(exc)[:500]
@@ -915,6 +1093,10 @@ def generate_patch(settings: Settings, document_id: str, instruction: str) -> Di
     }
     with _lock:
         with _connect(settings) as conn:
+            conn.execute(
+                f"UPDATE rag_change_patches SET status = {marker}, updated_at = {marker} WHERE document_id = {marker} AND status = {marker}",
+                ("superseded", _now(), document_id, "proposed"),
+            )
             conn.execute(
                 f"""
                 INSERT INTO rag_change_patches
@@ -944,7 +1126,14 @@ def generate_patch(settings: Settings, document_id: str, instruction: str) -> Di
                 ("patch_ready", _now(), document_id),
             )
             _update_proposal_status(conn, settings, str(patch["proposal_id"]), "patch_ready")
-            _record_event(conn, settings, str(patch["proposal_id"]), "patch_generated", "Diff gerado para revisao humana.", {"document_id": document_id, "patch_id": patch["id"]})
+            _record_event(
+                conn,
+                settings,
+                str(patch["proposal_id"]),
+                "patch_generated",
+                "Diff gerado para revisao humana.",
+                {"document_id": document_id, "patch_id": patch["id"], "attachment_ids": attachment_ids},
+            )
             return _hydrate_proposal(conn, settings, str(patch["proposal_id"])) or patch
 
 

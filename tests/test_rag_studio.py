@@ -140,3 +140,42 @@ def test_generate_patch_fallback_and_resolve_requires_validation(tmp_path: Path)
 
     assert validated["status"] == "validated"
     assert resolved["status"] == "resolved"
+
+
+def test_regenerated_patch_supersedes_previous_version(tmp_path: Path):
+    settings = _settings(tmp_path)
+    _write_md(settings.resolved_knowledge_dir, "skills/hard-skills.md")
+    proposal = rag_studio.create_proposal(settings, {"title": "Patch", "question": "Stack"})
+    proposal = rag_studio.add_documents(settings, proposal["id"], ["knowledge/skills/hard-skills.md"])
+    document_id = proposal["documents"][0]["id"]
+
+    first = rag_studio.generate_patch(settings, document_id, "Adicionar SQL.")
+    first_patch_id = first["patches"][0]["id"]
+    second = rag_studio.generate_patch(settings, document_id, "Adicionar SQL e metodologias ageis.")
+    patches = second["documents"][0]["patches"]
+
+    assert patches[0]["id"] != first_patch_id
+    assert patches[0]["status"] == "proposed"
+    assert patches[0]["payload"]["instruction"] == "Adicionar SQL e metodologias ageis."
+    assert any(patch["id"] == first_patch_id and patch["status"] == "superseded" for patch in patches)
+
+
+def test_attachment_is_available_to_patch_generation(tmp_path: Path):
+    settings = _settings(tmp_path)
+    _write_md(settings.resolved_knowledge_dir, "skills/hard-skills.md")
+    proposal = rag_studio.create_proposal(settings, {"title": "Patch com anexo", "question": "Stack"})
+    proposal = rag_studio.add_documents(settings, proposal["id"], ["knowledge/skills/hard-skills.md"])
+    attachment = rag_studio.add_attachment(
+        settings,
+        proposal["id"],
+        filename="contexto.txt",
+        content_type="text/plain",
+        data="Metodologias ageis aparecem no documento externo.".encode("utf-8"),
+    )
+
+    updated = rag_studio.generate_patch(settings, proposal["documents"][0]["id"], "Use o anexo para completar o contexto.")
+    patch = updated["patches"][0]
+
+    assert attachment["filename"] == "contexto.txt"
+    assert attachment["id"] in patch["payload"]["attachment_ids"]
+    assert updated["attachments"][0]["text_preview"].startswith("Metodologias")

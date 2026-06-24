@@ -1181,6 +1181,51 @@ def admin_rag_studio_add_documents(proposal_id: str, payload: RagStudioDocuments
     return proposal
 
 
+@router.post("/rag-studio/proposals/{proposal_id}/attachments")
+async def admin_rag_studio_add_attachments(proposal_id: str, request: Request, files: List[UploadFile] = File(...)):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    saved = []
+    for upload in files[:5]:
+        data = await upload.read()
+        saved.append(
+            rag_studio.add_attachment(
+                settings,
+                proposal_id,
+                filename=upload.filename or "attachment.txt",
+                content_type=upload.content_type or "application/octet-stream",
+                data=data,
+            )
+        )
+    proposal = rag_studio.get_proposal(settings, proposal_id)
+    log_event(
+        settings,
+        "admin_rag_studio_attachment",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"proposal_id": proposal_id, "count": len(saved)},
+    )
+    return {"attachments": saved, "proposal": proposal}
+
+
+@router.delete("/rag-studio/attachments/{attachment_id}")
+def admin_rag_studio_delete_attachment(attachment_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    if not rag_studio.delete_attachment(settings, attachment_id):
+        raise AppError("attachment_not_found", "Anexo nao encontrado.", 404)
+    log_event(
+        settings,
+        "admin_rag_studio_attachment_delete",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"attachment_id": attachment_id},
+    )
+    return {"ok": True}
+
+
 @router.post("/rag-studio/documents/{document_id}/generate-patch")
 def admin_rag_studio_generate_patch(document_id: str, payload: RagStudioPatchRequest, request: Request):
     settings = _settings()
