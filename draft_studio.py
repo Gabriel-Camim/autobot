@@ -1157,7 +1157,7 @@ def list_canonical_documents(settings: Settings) -> List[Dict[str, Any]]:
             relative = path.resolve().relative_to(base).as_posix()
         except ValueError:
             continue
-        if relative.startswith("_drafts/"):
+        if relative.startswith(("_drafts/", "_context/")):
             continue
         repo_path = f"knowledge/{relative}"
         text = path.read_text(encoding="utf-8")

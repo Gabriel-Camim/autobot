@@ -59,6 +59,22 @@ Conteudo em revisao.
 """,
         encoding="utf-8",
     )
+    context = knowledge / "_context" / "rag-studio" / "proposal-1"
+    context.mkdir(parents=True)
+    (context / "referencia.md").write_text(
+        """---
+title: Contexto Privado
+category: rag-studio-context
+tags: [context]
+visibility: public
+priority: 1
+updated_at: 2026-06-24
+summary: Mesmo público no frontmatter, contexto privado não entra no RAG.
+---
+Conteúdo contextual privado.
+""",
+        encoding="utf-8",
+    )
 
     settings = Settings(
         _env_file=None,

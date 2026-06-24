@@ -1226,6 +1226,117 @@ def admin_rag_studio_delete_attachment(attachment_id: str, request: Request):
     return {"ok": True}
 
 
+@router.post("/rag-studio/proposals/{proposal_id}/context-documents")
+async def admin_rag_studio_add_context_documents(proposal_id: str, request: Request, files: List[UploadFile] = File(...)):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    saved = []
+    for upload in files[:5]:
+        data = await upload.read()
+        context_doc = rag_studio.prepare_context_document(
+            settings,
+            proposal_id,
+            filename=upload.filename or "context.txt",
+            content_type=upload.content_type or "application/octet-stream",
+            data=data,
+        )
+        markdown = rag_studio.context_document_markdown(context_doc)
+        commit = _github_put(settings, str(context_doc["git_path"]), markdown, f"rag-studio: add context {context_doc['filename']}")
+        normalized, target = _resolve_content_path(str(context_doc["git_path"]), settings, require_markdown=True)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(markdown, encoding="utf-8", newline="\n")
+        context_doc["git_path"] = normalized
+        saved.append(rag_studio.save_context_document(settings, context_doc, git_commit_sha=commit.commit_sha))
+    proposal = rag_studio.get_proposal(settings, proposal_id)
+    log_event(
+        settings,
+        "admin_rag_studio_context_document",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"proposal_id": proposal_id, "count": len(saved)},
+    )
+    return {"context_documents": saved, "proposal": proposal}
+
+
+@router.get("/rag-studio/proposals/{proposal_id}/context-documents")
+def admin_rag_studio_context_documents(proposal_id: str, request: Request):
+    settings = _settings()
+    _require_admin(request, settings)
+    return {"context_documents": rag_studio.list_context_documents(settings, proposal_id)}
+
+
+@router.post("/rag-studio/context-documents/{context_id}/approve")
+def admin_rag_studio_approve_context_document(context_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    context_doc = rag_studio.approve_context_document(settings, context_id)
+    proposal = rag_studio.get_proposal(settings, str(context_doc["proposal_id"]))
+    log_event(settings, "admin_rag_studio_context_approve", request=request, session_id=user.login, actor_type="admin", payload={"context_id": context_id})
+    return {"context_document": context_doc, "proposal": proposal}
+
+
+@router.post("/rag-studio/context-documents/{context_id}/index")
+def admin_rag_studio_index_context_document(context_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    result = rag_studio.index_approved_context_document(settings, context_id)
+    context_doc = result.get("context_document") or {}
+    proposal = rag_studio.get_proposal(settings, str(context_doc.get("proposal_id") or ""))
+    log_event(
+        settings,
+        "admin_rag_studio_context_index",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"context_id": context_id, "chunks": (result.get("index") or {}).get("chunks")},
+    )
+    return {"context_document": context_doc, "index": result.get("index"), "proposal": proposal}
+
+
+@router.post("/rag-studio/context-documents/{context_id}/ignore")
+def admin_rag_studio_ignore_context_document(context_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    context_doc = rag_studio.ignore_context_document(settings, context_id)
+    proposal = rag_studio.get_proposal(settings, str(context_doc["proposal_id"]))
+    log_event(settings, "admin_rag_studio_context_ignore", request=request, session_id=user.login, actor_type="admin", payload={"context_id": context_id})
+    return {"context_document": context_doc, "proposal": proposal}
+
+
+@router.delete("/rag-studio/context-documents/{context_id}")
+def admin_rag_studio_delete_context_document(context_id: str, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    context_doc = rag_studio.get_context_document(settings, context_id, include_text=False)
+    if not context_doc:
+        raise AppError("context_document_not_found", "Documento contextual nao encontrado.", 404)
+    git_path = context_doc.get("git_path")
+    commit = None
+    if git_path:
+        try:
+            commit = _github_delete(settings, str(git_path), f"rag-studio: remove context {context_doc.get('filename') or context_id}")
+        except AppError as exc:
+            if exc.code != "file_not_found":
+                raise
+        try:
+            _normalized, target = _resolve_content_path(str(git_path), settings, require_markdown=True)
+            target.unlink(missing_ok=True)
+        except AppError:
+            pass
+    if not rag_studio.delete_context_document(settings, context_id):
+        raise AppError("context_document_not_found", "Documento contextual nao encontrado.", 404)
+    log_event(
+        settings,
+        "admin_rag_studio_context_delete",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"context_id": context_id, "commit_sha": commit.commit_sha if commit else None},
+    )
+    return {"ok": True, "commit": commit.model_dump() if commit else None}
+
+
 @router.post("/rag-studio/documents/{document_id}/generate-patch")
 def admin_rag_studio_generate_patch(document_id: str, payload: RagStudioPatchRequest, request: Request):
     settings = _settings()

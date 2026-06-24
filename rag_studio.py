@@ -19,11 +19,14 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from agent import AppError, _build_llm, _response_content_to_text, build_rag_probe, sanitize_answer_text
 from config import Settings
 from rag_quality import get_rag_feedback, get_rag_trace, list_rag_feedback, triage_rag_feedback
+from rag_studio_context_store import index_context_document, remove_context_document_chunks, search_context_documents
 
 
 _lock = threading.Lock()
 OPEN_STATUSES = {"open", "investigating", "documents_selected", "patch_ready", "applied", "validating"}
 DOC_DONE_STATUSES = {"applied", "ignored"}
+CONTEXT_PENDING_STATUSES = {"extracted", "approved"}
+CONTEXT_READY_STATUS = "indexed"
 ALLOWED_ATTACHMENT_SUFFIXES = {".md", ".txt", ".json", ".pdf", ".docx"}
 MAX_ATTACHMENTS_PER_PROPOSAL = 5
 MAX_ATTACHMENT_MB = 10
@@ -179,6 +182,13 @@ def _ensure_schema(conn, *, postgres: bool) -> None:
     _add_column_if_missing(conn, "rag_change_proposals", "question", "TEXT", postgres=postgres)
     _add_column_if_missing(conn, "rag_change_proposals", "answer_excerpt", "TEXT", postgres=postgres)
     _add_column_if_missing(conn, "rag_change_proposals", "active_context", "TEXT", postgres=postgres)
+    _add_column_if_missing(conn, "rag_change_attachments", "status", "TEXT", postgres=postgres)
+    _add_column_if_missing(conn, "rag_change_attachments", "title", "TEXT", postgres=postgres)
+    _add_column_if_missing(conn, "rag_change_attachments", "summary", "TEXT", postgres=postgres)
+    _add_column_if_missing(conn, "rag_change_attachments", "git_path", "TEXT", postgres=postgres)
+    _add_column_if_missing(conn, "rag_change_attachments", "git_commit_sha", "TEXT", postgres=postgres)
+    _add_column_if_missing(conn, "rag_change_attachments", "indexed_at", "TEXT", postgres=postgres)
+    _add_column_if_missing(conn, "rag_change_attachments", "ignored_at", "TEXT", postgres=postgres)
 
 
 def init_rag_studio_db(settings: Settings) -> None:
@@ -207,8 +217,8 @@ def _normalize_repo_path(raw_path: str) -> str:
     if path.parts[0] != "knowledge":
         path = PurePosixPath("knowledge") / path
     parts = path.parts
-    if len(parts) > 1 and parts[1] == "_drafts":
-        raise AppError("invalid_path", "Drafts privados nao sao documentos canonicos.", 400)
+    if len(parts) > 1 and parts[1] in {"_drafts", "_context"}:
+        raise AppError("invalid_path", "Arquivos privados do RAG Studio nao sao documentos canonicos.", 400)
     return path.as_posix()
 
 
@@ -365,6 +375,13 @@ def _attachment_from_row(row: Any) -> Dict[str, Any]:
         "proposal_id": row.get("proposal_id"),
         "document_id": row.get("document_id"),
         "created_at": str(row.get("created_at")),
+        "status": row.get("status") or "extracted",
+        "title": row.get("title") or row.get("filename"),
+        "summary": row.get("summary") or "",
+        "git_path": row.get("git_path"),
+        "git_commit_sha": row.get("git_commit_sha"),
+        "indexed_at": str(row.get("indexed_at")) if row.get("indexed_at") else None,
+        "ignored_at": str(row.get("ignored_at")) if row.get("ignored_at") else None,
         "filename": row.get("filename"),
         "content_type": row.get("content_type"),
         "size_bytes": row.get("size_bytes"),
@@ -475,7 +492,9 @@ def _hydrate_proposal(conn, settings: Settings, proposal_id: str) -> Optional[Di
     proposal["documents"] = [doc for doc in docs if doc]
     proposal["patches"] = [patch for patch in patches if patch]
     proposal["events"] = events
-    proposal["attachments"] = [_attachment_public(item) for item in attachments]
+    context_documents = [_attachment_public(item) for item in attachments]
+    proposal["attachments"] = context_documents
+    proposal["context_documents"] = context_documents
     proposal["timeline"] = _timeline(proposal)
     proposal["next_action"] = _next_action(proposal)
     return proposal
@@ -660,7 +679,7 @@ def _source_to_repo_path(source: str) -> Optional[str]:
         repo_path = clean
     else:
         repo_path = f"knowledge/{clean}"
-    if "/_drafts/" in repo_path or repo_path.endswith("/_drafts"):
+    if any(token in repo_path for token in ["/_drafts/", "/_context/"]) or repo_path.endswith(("/_drafts", "/_context")):
         return None
     if not repo_path.lower().endswith(".md"):
         return None
@@ -865,7 +884,44 @@ def extract_attachment_text(filename: str, data: bytes) -> str:
     return ""
 
 
-def add_attachment(settings: Settings, proposal_id: str, *, filename: str, content_type: str, data: bytes) -> Dict[str, Any]:
+def _slugify(value: str, fallback: str = "contexto") -> str:
+    clean = re.sub(r"[^a-zA-Z0-9]+", "-", value.lower()).strip("-")
+    return clean[:64] or fallback
+
+
+def _context_git_path(proposal_id: str, context_id: str, filename: str) -> str:
+    stem = _slugify(Path(filename).stem, "documento")
+    date = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    return f"knowledge/_context/rag-studio/{proposal_id}/{date}-{stem}-{context_id[:8]}.md"
+
+
+def context_document_markdown(document: Dict[str, Any]) -> str:
+    title = str(document.get("title") or f"Contexto externo: {document.get('filename')}")
+    metadata = {
+        "title": title,
+        "category": "rag-studio-context",
+        "tags": ["rag-studio", "context", "external-document"],
+        "visibility": "context",
+        "priority": 5,
+        "updated_at": datetime.now(timezone.utc).date().isoformat(),
+        "summary": document.get("summary") or "Documento contextual privado usado somente no RAG Studio.",
+        "proposal_id": document.get("proposal_id"),
+        "context_id": document.get("id"),
+        "source_filename": document.get("filename"),
+        "source_hash": document.get("sha256"),
+        "status": document.get("status") or "extracted",
+    }
+    frontmatter = yaml.safe_dump(metadata, allow_unicode=True, sort_keys=False).strip()
+    extracted = str(document.get("extracted_text") or "").strip()
+    return (
+        f"---\n{frontmatter}\n---\n\n"
+        f"# {title}\n\n"
+        "> Documento contextual privado. Ele nao entra no RAG publico; primeiro precisa orientar um patch aprovado em Markdown canonico.\n\n"
+        f"{extracted}\n"
+    )
+
+
+def prepare_context_document(settings: Settings, proposal_id: str, *, filename: str, content_type: str, data: bytes) -> Dict[str, Any]:
     safe_name = Path(filename or "attachment.txt").name
     max_bytes = MAX_ATTACHMENT_MB * 1024 * 1024
     if len(data) > max_bytes:
@@ -873,11 +929,19 @@ def add_attachment(settings: Settings, proposal_id: str, *, filename: str, conte
     extracted = extract_attachment_text(safe_name, data).strip()
     if not extracted:
         raise AppError("empty_attachment", "Nao consegui extrair texto deste anexo.", 422)
+    context_id = str(uuid4())
     attachment = {
-        "id": str(uuid4()),
+        "id": context_id,
         "proposal_id": proposal_id,
         "document_id": None,
         "created_at": _now(),
+        "status": "extracted",
+        "title": f"Contexto externo: {safe_name}",
+        "summary": f"Texto extraido de {safe_name} para curadoria no RAG Studio.",
+        "git_path": _context_git_path(proposal_id, context_id, safe_name),
+        "git_commit_sha": None,
+        "indexed_at": None,
+        "ignored_at": None,
         "filename": safe_name,
         "content_type": content_type or "application/octet-stream",
         "size_bytes": len(data),
@@ -885,9 +949,14 @@ def add_attachment(settings: Settings, proposal_id: str, *, filename: str, conte
         "extracted_text": extracted[:120000],
         "metadata": {"suffix": Path(safe_name).suffix.lower(), "truncated": len(extracted) > 120000},
     }
+    return attachment
+
+
+def save_context_document(settings: Settings, document: Dict[str, Any], *, git_commit_sha: Optional[str] = None) -> Dict[str, Any]:
     marker = _placeholder(settings)
     with _lock:
         with _connect(settings) as conn:
+            proposal_id = str(document.get("proposal_id"))
             proposal = _proposal_query(conn, settings, proposal_id)
             if not proposal:
                 raise AppError("proposal_not_found", "Proposta nao encontrada.", 404)
@@ -896,31 +965,47 @@ def add_attachment(settings: Settings, proposal_id: str, *, filename: str, conte
             conn.execute(
                 f"""
                 INSERT INTO rag_change_attachments
-                (id, proposal_id, document_id, created_at, filename, content_type, size_bytes, sha256, extracted_text, metadata_json)
-                VALUES ({",".join([marker] * 10)})
+                (id, proposal_id, document_id, created_at, filename, content_type, size_bytes, sha256, extracted_text, metadata_json,
+                 status, title, summary, git_path, git_commit_sha, indexed_at, ignored_at)
+                VALUES ({",".join([marker] * 17)})
                 """,
                 (
-                    attachment["id"],
-                    attachment["proposal_id"],
-                    attachment["document_id"],
-                    attachment["created_at"],
-                    attachment["filename"],
-                    attachment["content_type"],
-                    attachment["size_bytes"],
-                    attachment["sha256"],
-                    attachment["extracted_text"],
-                    _safe_json(attachment["metadata"]),
+                    document["id"],
+                    document["proposal_id"],
+                    document.get("document_id"),
+                    document["created_at"],
+                    document["filename"],
+                    document["content_type"],
+                    document["size_bytes"],
+                    document["sha256"],
+                    document["extracted_text"],
+                    _safe_json(document.get("metadata") or {}),
+                    document.get("status") or "extracted",
+                    document.get("title") or document.get("filename"),
+                    document.get("summary") or "",
+                    document.get("git_path"),
+                    git_commit_sha,
+                    document.get("indexed_at"),
+                    document.get("ignored_at"),
                 ),
             )
             _record_event(
                 conn,
                 settings,
                 proposal_id,
-                "attachment_added",
-                "Anexo privado adicionado como contexto auxiliar.",
-                {"attachment_id": attachment["id"], "filename": safe_name, "size_bytes": len(data)},
+                "context_document_extracted",
+                "Documento contextual extraido e persistido para revisao.",
+                {"context_id": document["id"], "filename": document["filename"], "git_path": document.get("git_path")},
             )
-    return _attachment_public(attachment)
+            saved = _attachment_from_row(
+                conn.execute(f"SELECT * FROM rag_change_attachments WHERE id = {marker}", (document["id"],)).fetchone()
+            )
+    return _attachment_public(saved)
+
+
+def add_attachment(settings: Settings, proposal_id: str, *, filename: str, content_type: str, data: bytes) -> Dict[str, Any]:
+    document = prepare_context_document(settings, proposal_id, filename=filename, content_type=content_type, data=data)
+    return save_context_document(settings, document)
 
 
 def delete_attachment(settings: Settings, attachment_id: str) -> bool:
@@ -942,6 +1027,111 @@ def delete_attachment(settings: Settings, attachment_id: str) -> bool:
             return cursor.rowcount > 0
 
 
+def get_context_document(settings: Settings, context_id: str, *, include_text: bool = True) -> Optional[Dict[str, Any]]:
+    marker = _placeholder(settings)
+    with _lock:
+        with _connect(settings) as conn:
+            row = conn.execute(f"SELECT * FROM rag_change_attachments WHERE id = {marker}", (context_id,)).fetchone()
+    item = _attachment_from_row(row) if row else None
+    if not item:
+        return None
+    return item if include_text else _attachment_public(item)
+
+
+def list_context_documents(settings: Settings, proposal_id: str) -> List[Dict[str, Any]]:
+    marker = _placeholder(settings)
+    with _lock:
+        with _connect(settings) as conn:
+            rows = conn.execute(
+                f"SELECT * FROM rag_change_attachments WHERE proposal_id = {marker} ORDER BY created_at DESC",
+                (proposal_id,),
+            ).fetchall()
+    return [_attachment_public(_attachment_from_row(row)) for row in rows]
+
+
+def approve_context_document(settings: Settings, context_id: str) -> Dict[str, Any]:
+    marker = _placeholder(settings)
+    with _lock:
+        with _connect(settings) as conn:
+            row = conn.execute(f"SELECT * FROM rag_change_attachments WHERE id = {marker}", (context_id,)).fetchone()
+            if not row:
+                raise AppError("context_document_not_found", "Documento contextual nao encontrado.", 404)
+            item = _attachment_from_row(row)
+            if item.get("status") == "ignored":
+                raise AppError("context_document_ignored", "Documento contextual ignorado nao pode ser aprovado.", 409)
+            conn.execute(
+                f"UPDATE rag_change_attachments SET status = {marker}, indexed_at = NULL, ignored_at = NULL WHERE id = {marker}",
+                ("approved", context_id),
+            )
+            _record_event(
+                conn,
+                settings,
+                str(item["proposal_id"]),
+                "context_document_approved",
+                "Documento contextual aprovado para indexacao privada.",
+                {"context_id": context_id},
+            )
+            updated = _attachment_from_row(conn.execute(f"SELECT * FROM rag_change_attachments WHERE id = {marker}", (context_id,)).fetchone())
+    return _attachment_public(updated)
+
+
+def index_approved_context_document(settings: Settings, context_id: str) -> Dict[str, Any]:
+    document = get_context_document(settings, context_id, include_text=True)
+    if not document:
+        raise AppError("context_document_not_found", "Documento contextual nao encontrado.", 404)
+    if document.get("status") not in {"approved", "indexed"}:
+        raise AppError("context_document_not_approved", "Aprove o documento contextual antes de indexar.", 409)
+    result = index_context_document(settings, document)
+    if not result.get("indexed"):
+        raise AppError("context_index_failed", str(result.get("error") or "Nao foi possivel indexar o documento contextual."), 503)
+    marker = _placeholder(settings)
+    with _lock:
+        with _connect(settings) as conn:
+            conn.execute(
+                f"UPDATE rag_change_attachments SET status = {marker}, indexed_at = {marker} WHERE id = {marker}",
+                ("indexed", result.get("indexed_at") or _now(), context_id),
+            )
+            _record_event(
+                conn,
+                settings,
+                str(document["proposal_id"]),
+                "context_document_indexed",
+                "Documento contextual aprovado e indexado no RAG Studio.",
+                {"context_id": context_id, "chunks": result.get("chunks")},
+            )
+            updated = _attachment_from_row(conn.execute(f"SELECT * FROM rag_change_attachments WHERE id = {marker}", (context_id,)).fetchone())
+    return {"context_document": _attachment_public(updated), "index": result}
+
+
+def ignore_context_document(settings: Settings, context_id: str) -> Dict[str, Any]:
+    document = get_context_document(settings, context_id, include_text=True)
+    if not document:
+        raise AppError("context_document_not_found", "Documento contextual nao encontrado.", 404)
+    remove_context_document_chunks(settings, context_id)
+    marker = _placeholder(settings)
+    with _lock:
+        with _connect(settings) as conn:
+            conn.execute(
+                f"UPDATE rag_change_attachments SET status = {marker}, ignored_at = {marker}, indexed_at = NULL WHERE id = {marker}",
+                ("ignored", _now(), context_id),
+            )
+            _record_event(
+                conn,
+                settings,
+                str(document["proposal_id"]),
+                "context_document_ignored",
+                "Documento contextual ignorado para esta proposta.",
+                {"context_id": context_id},
+            )
+            updated = _attachment_from_row(conn.execute(f"SELECT * FROM rag_change_attachments WHERE id = {marker}", (context_id,)).fetchone())
+    return _attachment_public(updated)
+
+
+def delete_context_document(settings: Settings, context_id: str) -> bool:
+    remove_context_document_chunks(settings, context_id)
+    return delete_attachment(settings, context_id)
+
+
 def _attachments_for_prompt(conn, settings: Settings, proposal_id: str, document_id: str) -> List[Dict[str, Any]]:
     marker = _placeholder(settings)
     rows = conn.execute(
@@ -955,19 +1145,35 @@ def _attachments_for_prompt(conn, settings: Settings, proposal_id: str, document
     return [_attachment_from_row(row) for row in rows]
 
 
-def _attachment_prompt_block(attachments: List[Dict[str, Any]]) -> str:
-    if not attachments:
-        return "Nenhum anexo privado foi enviado."
+def _context_documents_for_proposal(conn, settings: Settings, proposal_id: str) -> List[Dict[str, Any]]:
+    marker = _placeholder(settings)
+    rows = conn.execute(
+        f"SELECT * FROM rag_change_attachments WHERE proposal_id = {marker} ORDER BY created_at DESC",
+        (proposal_id,),
+    ).fetchall()
+    return [_attachment_from_row(row) for row in rows]
+
+
+def _private_context_prompt_block(context_hits: List[Dict[str, Any]]) -> str:
+    if not context_hits:
+        return "Nenhum trecho de contexto privado foi recuperado."
     blocks: List[str] = []
-    budget = 18000
-    for item in attachments:
-        text = str(item.get("extracted_text") or "").strip()
-        if not text or budget <= 0:
+    for item in context_hits[:8]:
+        text = str(item.get("excerpt") or "").strip()
+        if not text:
             continue
-        slice_text = text[: min(6000, budget)]
-        budget -= len(slice_text)
-        blocks.append(f"[anexo: {item.get('filename')}]\n{slice_text}")
-    return "\n\n---\n\n".join(blocks) if blocks else "Nenhum texto util foi extraido dos anexos."
+        blocks.append(
+            "\n".join(
+                [
+                    f"[contexto privado: {item.get('title') or item.get('source')}]",
+                    f"source: {item.get('source')}",
+                    f"context_id: {item.get('context_id')}",
+                    f"score: {item.get('relevance_score')}",
+                    text[:1200],
+                ]
+            )
+        )
+    return "\n\n---\n\n".join(blocks) if blocks else "Nenhum trecho util foi recuperado do contexto privado."
 
 
 def _patch_prompt(
@@ -975,11 +1181,11 @@ def _patch_prompt(
     document: Dict[str, Any],
     original: str,
     instruction: str,
-    attachments: Optional[List[Dict[str, Any]]] = None,
+    private_context: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     investigation = proposal.get("investigation") or {}
     evidence = document.get("evidence") or []
-    attachment_block = _attachment_prompt_block(attachments or [])
+    private_context_block = _private_context_prompt_block(private_context or [])
     return f"""
 Voce e um agente RAGOps que prepara alteracoes de Markdown para revisao humana.
 
@@ -989,8 +1195,8 @@ Regras:
 - Preserve frontmatter YAML valido.
 - Retorne o Markdown completo em proposed_content.
 - Nao use marcadores de negrito com **.
-- Anexos privados sao contexto auxiliar. Se conflitarem com o Markdown atual, registre em conflicts.
-- Nao trate anexos como fonte publica ate Gabriel aprovar o diff.
+- Contexto privado indexado e contexto publico sao auxiliares. Se conflitarem com o Markdown atual, registre em conflicts.
+- Nao trate contexto privado como fonte publica ate Gabriel aprovar o diff no Markdown canonico.
 
 Problema/proposta:
 {proposal.get("problem_statement") or ""}
@@ -1006,8 +1212,8 @@ Documento alvo: {document.get("path")}
 Evidencias recuperadas:
 {json.dumps(evidence, ensure_ascii=False, indent=2)[:7000]}
 
-Anexos privados:
-{attachment_block}
+Contexto privado indexado do RAG Studio:
+{private_context_block}
 
 Markdown atual:
 ```markdown
@@ -1045,19 +1251,47 @@ def generate_patch(settings: Settings, document_id: str, instruction: str) -> Di
             proposal = _proposal_query(conn, settings, str(document.get("proposal_id")))
             if not proposal:
                 raise AppError("proposal_not_found", "Proposta nao encontrada.", 404)
-            attachments = _attachments_for_prompt(conn, settings, str(proposal["id"]), document_id)
+            context_documents = _context_documents_for_proposal(conn, settings, str(proposal["id"]))
+            pending_context = [item for item in context_documents if item.get("status") in CONTEXT_PENDING_STATUSES]
+            if pending_context:
+                raise AppError(
+                    "context_documents_pending",
+                    "Revise, indexe ou ignore os documentos de contexto pendentes antes de gerar o diff.",
+                    409,
+                )
     original = _read_canonical_markdown(settings, str(document["path"]))
+    private_context = search_context_documents(
+        settings,
+        str(proposal["id"]),
+        "\n".join(
+            item
+            for item in [
+                clean_instruction,
+                str(proposal.get("question") or ""),
+                str(proposal.get("problem_statement") or ""),
+                str(document.get("path") or ""),
+            ]
+            if item
+        ),
+        limit=6,
+    )
     model = settings.openai_chat_model
     rationale = "Patch gerado por fallback deterministico."
-    attachment_ids = [item.get("id") for item in attachments if item.get("id")]
-    payload: Dict[str, Any] = {"instruction": clean_instruction, "fallback": True, "conflicts": [], "attachment_ids": attachment_ids}
+    context_document_ids = sorted({str(item.get("context_id")) for item in private_context if item.get("context_id")})
+    payload: Dict[str, Any] = {
+        "instruction": clean_instruction,
+        "fallback": True,
+        "conflicts": [],
+        "context_document_ids": context_document_ids,
+        "private_context": private_context,
+    }
     proposed = _fallback_proposed_content(original, clean_instruction)
     try:
         llm = _build_llm(settings)
         response = llm.invoke(
             [
                 SystemMessage(content="Voce e um agente RAGOps. Responda apenas JSON valido."),
-                HumanMessage(content=_patch_prompt(proposal, document, original, clean_instruction, attachments)),
+                HumanMessage(content=_patch_prompt(proposal, document, original, clean_instruction, private_context)),
             ]
         )
         parsed = _extract_json_object(_response_content_to_text(response.content))
@@ -1068,7 +1302,8 @@ def generate_patch(settings: Settings, document_id: str, instruction: str) -> Di
                 "instruction": clean_instruction,
                 "fallback": False,
                 "conflicts": parsed.get("conflicts") if isinstance(parsed.get("conflicts"), list) else [],
-                "attachment_ids": attachment_ids,
+                "context_document_ids": context_document_ids,
+                "private_context": private_context,
             }
     except Exception as exc:
         payload["agent_error"] = str(exc)[:500]
@@ -1132,7 +1367,7 @@ def generate_patch(settings: Settings, document_id: str, instruction: str) -> Di
                 str(patch["proposal_id"]),
                 "patch_generated",
                 "Diff gerado para revisao humana.",
-                {"document_id": document_id, "patch_id": patch["id"], "attachment_ids": attachment_ids},
+                {"document_id": document_id, "patch_id": patch["id"], "context_document_ids": context_document_ids},
             )
             return _hydrate_proposal(conn, settings, str(patch["proposal_id"])) or patch
 

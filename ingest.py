@@ -47,7 +47,7 @@ def _iter_markdown_files(knowledge_dir: Path) -> Iterable[Path]:
     return sorted(
         path
         for path in knowledge_dir.rglob("*.md")
-        if path.is_file() and "_drafts" not in path.relative_to(knowledge_dir).parts
+        if path.is_file() and "_drafts" not in path.relative_to(knowledge_dir).parts and "_context" not in path.relative_to(knowledge_dir).parts
     )
 
 

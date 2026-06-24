@@ -160,12 +160,12 @@ def test_regenerated_patch_supersedes_previous_version(tmp_path: Path):
     assert any(patch["id"] == first_patch_id and patch["status"] == "superseded" for patch in patches)
 
 
-def test_attachment_is_available_to_patch_generation(tmp_path: Path):
+def test_context_document_blocks_until_indexed_and_feeds_patch(monkeypatch, tmp_path: Path):
     settings = _settings(tmp_path)
     _write_md(settings.resolved_knowledge_dir, "skills/hard-skills.md")
-    proposal = rag_studio.create_proposal(settings, {"title": "Patch com anexo", "question": "Stack"})
+    proposal = rag_studio.create_proposal(settings, {"title": "Patch com contexto", "question": "Stack"})
     proposal = rag_studio.add_documents(settings, proposal["id"], ["knowledge/skills/hard-skills.md"])
-    attachment = rag_studio.add_attachment(
+    context_doc = rag_studio.add_attachment(
         settings,
         proposal["id"],
         filename="contexto.txt",
@@ -173,9 +173,57 @@ def test_attachment_is_available_to_patch_generation(tmp_path: Path):
         data="Metodologias ageis aparecem no documento externo.".encode("utf-8"),
     )
 
-    updated = rag_studio.generate_patch(settings, proposal["documents"][0]["id"], "Use o anexo para completar o contexto.")
+    with pytest.raises(AppError) as pending:
+        rag_studio.generate_patch(settings, proposal["documents"][0]["id"], "Use o contexto privado para completar o contexto.")
+    assert pending.value.code == "context_documents_pending"
+
+    approved = rag_studio.approve_context_document(settings, context_doc["id"])
+    assert approved["status"] == "approved"
+
+    monkeypatch.setattr(
+        rag_studio,
+        "index_context_document",
+        lambda _settings, document: {"indexed": True, "chunks": 1, "indexed_at": "2026-06-24T00:00:00+00:00"},
+    )
+    indexed = rag_studio.index_approved_context_document(settings, context_doc["id"])
+    assert indexed["context_document"]["status"] == "indexed"
+
+    monkeypatch.setattr(
+        rag_studio,
+        "search_context_documents",
+        lambda *_args, **_kwargs: [
+            {
+                "context_id": context_doc["id"],
+                "source": context_doc["filename"],
+                "title": context_doc["title"],
+                "excerpt": "Metodologias ageis aparecem no documento externo.",
+                "relevance_score": 0.91,
+                "channel": "private_context",
+            }
+        ],
+    )
+
+    updated = rag_studio.generate_patch(settings, proposal["documents"][0]["id"], "Use o contexto privado para completar o contexto.")
     patch = updated["patches"][0]
 
-    assert attachment["filename"] == "contexto.txt"
-    assert attachment["id"] in patch["payload"]["attachment_ids"]
-    assert updated["attachments"][0]["text_preview"].startswith("Metodologias")
+    assert context_doc["filename"] == "contexto.txt"
+    assert context_doc["id"] in patch["payload"]["context_document_ids"]
+    assert patch["payload"]["private_context"][0]["channel"] == "private_context"
+    assert updated["context_documents"][0]["status"] == "indexed"
+
+
+def test_context_document_markdown_is_private(tmp_path: Path):
+    settings = _settings(tmp_path)
+    proposal = rag_studio.create_proposal(settings, {"title": "Contexto", "question": "Stack"})
+    context_doc = rag_studio.prepare_context_document(
+        settings,
+        proposal["id"],
+        filename="referencia.md",
+        content_type="text/markdown",
+        data="# Referencia\n\nConteudo auxiliar.".encode("utf-8"),
+    )
+    markdown = rag_studio.context_document_markdown(context_doc)
+
+    assert context_doc["git_path"].startswith(f"knowledge/_context/rag-studio/{proposal['id']}/")
+    assert "visibility: context" in markdown
+    assert "Conteudo auxiliar." in markdown
