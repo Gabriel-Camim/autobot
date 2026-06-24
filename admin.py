@@ -63,6 +63,7 @@ from rag_quality import (
     update_knowledge_suggestion_status,
 )
 import rag_studio
+import markdown_ai
 from warmup import start_warmup, warmup_status
 
 
@@ -275,6 +276,26 @@ class RagStudioPatchRequest(BaseModel):
 
 class RagStudioArchiveRequest(BaseModel):
     reason: Optional[str] = None
+
+
+class MarkdownAiSessionRequest(BaseModel):
+    mode: Literal["edit", "create"]
+    path: Optional[str] = None
+    base_content: str = ""
+
+
+class MarkdownAiGenerateRequest(BaseModel):
+    instruction: str
+    base_version_id: Optional[str] = None
+
+
+class MarkdownAiCommitRequest(BaseModel):
+    path: str
+    message: Optional[str] = None
+
+
+class MarkdownAiBridgeApplyRequest(BaseModel):
+    message: Optional[str] = None
 
 
 TreeNode.model_rebuild()
@@ -804,6 +825,160 @@ def delete_knowledge_file(path: str, request: Request):
         target.unlink()
     log_event(settings, "admin_file_delete", request=request, session_id=user.login, actor_type="admin", payload=commit.model_dump())
     return commit
+
+
+@router.post("/markdown-ai/sessions")
+def admin_markdown_ai_create_session(payload: MarkdownAiSessionRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    session = markdown_ai.create_session(
+        settings,
+        mode=payload.mode,
+        path=payload.path or "",
+        base_content=payload.base_content,
+    )
+    log_event(
+        settings,
+        "admin_markdown_ai_session",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"session_id": session["id"], "mode": payload.mode, "path": payload.path},
+    )
+    return session
+
+
+@router.get("/markdown-ai/sessions/{session_id}")
+def admin_markdown_ai_get_session(session_id: str, request: Request):
+    settings = _settings()
+    _require_admin(request, settings)
+    return markdown_ai.get_session(settings, session_id)
+
+
+@router.post("/markdown-ai/sessions/{session_id}/attachments")
+async def admin_markdown_ai_attachments(session_id: str, request: Request, files: List[UploadFile] = File(...)):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    current_session = markdown_ai.get_session(settings, session_id)
+    if len(current_session.get("attachments") or []) + len(files) > markdown_ai.MAX_ATTACHMENTS:
+        raise AppError("markdown_ai_too_many_attachments", "Limite de 5 anexos por sessão atingido.", 422)
+    saved_session = None
+    commits: List[Dict[str, Any]] = []
+    for upload in files:
+        data = await upload.read()
+        attachment = markdown_ai.prepare_attachment(
+            settings,
+            session_id,
+            filename=upload.filename or "attachment.txt",
+            content_type=upload.content_type or "application/octet-stream",
+            data=data,
+        )
+        markdown = markdown_ai.attachment_markdown(attachment)
+        commit = _github_put(settings, attachment["git_path"], markdown, f"markdown-ai: add context {attachment['filename']}")
+        normalized, target = _resolve_content_path(str(attachment["git_path"]), settings)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(markdown, encoding="utf-8", newline="\n")
+        saved_session = markdown_ai.save_attachment(settings, attachment, commit_sha=commit.commit_sha)
+        commits.append(commit.model_dump())
+        log_event(
+            settings,
+            "admin_markdown_ai_attachment",
+            request=request,
+            session_id=user.login,
+            actor_type="admin",
+            payload={"session_id": session_id, "path": normalized, "commit_sha": commit.commit_sha},
+        )
+    return {"session": saved_session or markdown_ai.get_session(settings, session_id), "commits": commits}
+
+
+@router.post("/markdown-ai/sessions/{session_id}/generate")
+def admin_markdown_ai_generate(session_id: str, payload: MarkdownAiGenerateRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    session = markdown_ai.generate_version(
+        settings,
+        session_id,
+        instruction=payload.instruction,
+        base_version_id=payload.base_version_id,
+    )
+    log_event(
+        settings,
+        "admin_markdown_ai_generate",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"session_id": session_id, "version_id": session.get("selected_version_id")},
+    )
+    return session
+
+
+@router.post("/markdown-ai/versions/{version_id}/use")
+def admin_markdown_ai_use_version(version_id: str, request: Request):
+    settings = _settings()
+    _require_admin(request, settings)
+    return markdown_ai.use_version(settings, version_id)
+
+
+@router.post("/markdown-ai/versions/{version_id}/commit")
+def admin_markdown_ai_commit_version(version_id: str, payload: MarkdownAiCommitRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    version = markdown_ai.get_version(settings, version_id)
+    normalized, target = _resolve_content_path(payload.path, settings)
+    _validate_markdown_frontmatter(version["content"])
+    commit = _github_put(settings, normalized, version["content"], payload.message or f"markdown-ai: update {normalized}")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(version["content"], encoding="utf-8", newline="\n")
+    log_event(
+        settings,
+        "admin_markdown_ai_commit",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"version_id": version_id, "path": normalized, "commit_sha": commit.commit_sha},
+    )
+    return {"commit": commit.model_dump(), "version": version}
+
+
+@router.post("/markdown-ai/versions/{version_id}/bridges/apply")
+def admin_markdown_ai_apply_bridges(version_id: str, payload: MarkdownAiBridgeApplyRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    version = markdown_ai.get_version(settings, version_id)
+    bridges = version.get("bridges") or []
+    if not bridges:
+        raise AppError("markdown_ai_no_bridges", "Esta versão não tem semantic bridges sugeridas.", 422)
+    repo_path = "knowledge/_system/semantic-bridges.yaml"
+    current = _github_read_text(settings, repo_path)
+    if current is None:
+        _normalized, target = _resolve_content_path(repo_path, settings, require_markdown=False)
+        current = target.read_text(encoding="utf-8") if target.exists() else "version: 1\nconcepts: []\n"
+    parsed = yaml.safe_load(current) or {}
+    if not isinstance(parsed, dict):
+        parsed = {"version": 1, "concepts": []}
+    concepts = parsed.setdefault("concepts", [])
+    existing_ids = {str(item.get("id")) for item in concepts if isinstance(item, dict)}
+    for bridge in bridges:
+        if not isinstance(bridge, dict):
+            continue
+        bridge_id = str(bridge.get("id") or "").strip()
+        if bridge_id and bridge_id not in existing_ids:
+            concepts.append(bridge)
+            existing_ids.add(bridge_id)
+    content = yaml.safe_dump(parsed, allow_unicode=True, sort_keys=False)
+    commit = _github_put(settings, repo_path, content, payload.message or "markdown-ai: update semantic bridges")
+    _normalized, target = _resolve_content_path(repo_path, settings, require_markdown=False)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8", newline="\n")
+    log_event(
+        settings,
+        "admin_markdown_ai_bridges_apply",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"version_id": version_id, "commit_sha": commit.commit_sha, "bridges": len(bridges)},
+    )
+    return {"commit": commit.model_dump(), "bridges": bridges}
 
 
 @router.post("/knowledge/folder", response_model=CommitResponse)
