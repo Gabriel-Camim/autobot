@@ -1321,10 +1321,21 @@ def _patch_prompt(
     original: str,
     instruction: str,
     private_context: Optional[List[Dict[str, Any]]] = None,
+    current_content_snapshot: Optional[str] = None,
 ) -> str:
     investigation = proposal.get("investigation") or {}
     evidence = document.get("evidence") or []
     private_context_block = _private_context_prompt_block(private_context or [])
+    current_snapshot_block = (
+        f"""
+Snapshot editado pelo Gabriel para partir desta versao:
+```markdown
+{current_content_snapshot}
+```
+"""
+        if current_content_snapshot and current_content_snapshot.strip()
+        else "Nenhum snapshot editado foi enviado; parta do Markdown atual."
+    )
     return f"""
 Voce e um agente RAGOps que prepara alteracoes de Markdown para revisao humana.
 
@@ -1354,6 +1365,9 @@ Evidencias recuperadas:
 Contexto privado indexado do RAG Studio:
 {private_context_block}
 
+Snapshot atual do diff/editor:
+{current_snapshot_block}
+
 Markdown atual:
 ```markdown
 {original}
@@ -1374,7 +1388,13 @@ def _fallback_proposed_content(original: str, instruction: str) -> str:
     return original.rstrip() + addition
 
 
-def generate_patch(settings: Settings, document_id: str, instruction: str) -> Dict[str, Any]:
+def generate_patch(
+    settings: Settings,
+    document_id: str,
+    instruction: str,
+    *,
+    current_content_snapshot: Optional[str] = None,
+) -> Dict[str, Any]:
     start = time.perf_counter()
     clean_instruction = (instruction or "").strip()
     if not clean_instruction:
@@ -1399,21 +1419,27 @@ def generate_patch(settings: Settings, document_id: str, instruction: str) -> Di
                     409,
                 )
     original = _read_canonical_markdown(settings, str(document["path"]))
-    private_context = search_context_documents(
-        settings,
-        str(proposal["id"]),
-        "\n".join(
-            item
-            for item in [
-                clean_instruction,
-                str(proposal.get("question") or ""),
-                str(proposal.get("problem_statement") or ""),
-                str(document.get("path") or ""),
-            ]
-            if item
-        ),
-        limit=6,
-    )
+    private_context_error: Optional[str] = None
+    try:
+        private_context = search_context_documents(
+            settings,
+            str(proposal["id"]),
+            "\n".join(
+                item
+                for item in [
+                    clean_instruction,
+                    current_content_snapshot or "",
+                    str(proposal.get("question") or ""),
+                    str(proposal.get("problem_statement") or ""),
+                    str(document.get("path") or ""),
+                ]
+                if item
+            ),
+            limit=6,
+        )
+    except Exception as exc:
+        private_context = []
+        private_context_error = str(exc)[:300]
     model = settings.openai_chat_model
     rationale = "Patch gerado por fallback deterministico."
     context_document_ids = sorted({str(item.get("context_id")) for item in private_context if item.get("context_id")})
@@ -1423,14 +1449,25 @@ def generate_patch(settings: Settings, document_id: str, instruction: str) -> Di
         "conflicts": [],
         "context_document_ids": context_document_ids,
         "private_context": private_context,
+        "current_content_snapshot": bool(current_content_snapshot and current_content_snapshot.strip()),
+        "private_context_error": private_context_error,
     }
-    proposed = _fallback_proposed_content(original, clean_instruction)
+    proposed = (current_content_snapshot or "").strip() or _fallback_proposed_content(original, clean_instruction)
     try:
         llm = _build_llm(settings)
         response = llm.invoke(
             [
                 SystemMessage(content="Voce e um agente RAGOps. Responda apenas JSON valido."),
-                HumanMessage(content=_patch_prompt(proposal, document, original, clean_instruction, private_context)),
+                HumanMessage(
+                    content=_patch_prompt(
+                        proposal,
+                        document,
+                        original,
+                        clean_instruction,
+                        private_context,
+                        current_content_snapshot=current_content_snapshot,
+                    )
+                ),
             ]
         )
         parsed = _extract_json_object(_response_content_to_text(response.content))
@@ -1443,6 +1480,8 @@ def generate_patch(settings: Settings, document_id: str, instruction: str) -> Di
                 "conflicts": parsed.get("conflicts") if isinstance(parsed.get("conflicts"), list) else [],
                 "context_document_ids": context_document_ids,
                 "private_context": private_context,
+                "current_content_snapshot": bool(current_content_snapshot and current_content_snapshot.strip()),
+                "private_context_error": private_context_error,
             }
     except Exception as exc:
         payload["agent_error"] = str(exc)[:500]
@@ -1511,6 +1550,44 @@ def generate_patch(settings: Settings, document_id: str, instruction: str) -> Di
             hydrated = _hydrate_proposal(conn, settings, str(patch["proposal_id"])) or patch
             hydrated["new_patch_id"] = patch["id"]
             return hydrated
+
+
+def edit_patch_content(settings: Settings, patch_id: str, proposed_content: str) -> Dict[str, Any]:
+    clean_content = (proposed_content or "").strip()
+    if not clean_content:
+        raise AppError("empty_patch_content", "O diff precisa ter conteudo para salvar.", 400)
+    marker = _placeholder(settings)
+    with _lock:
+        with _connect(settings) as conn:
+            patch = _patch_query(conn, settings, patch_id)
+            if not patch:
+                raise AppError("change_patch_not_found", "Patch nao encontrado.", 404)
+            if patch.get("status") != "proposed":
+                raise AppError("patch_edit_not_available", "Apenas diffs propostos podem ser editados.", 409)
+            diff = _diff_text(str(patch["target_path"]), str(patch["original_content"] or ""), clean_content)
+            if not diff.strip():
+                raise AppError("empty_patch", "O conteudo salvo nao gera diferenca no Markdown.", 422)
+            payload = {**(patch.get("payload") or {}), "edited_by_admin": True}
+            conn.execute(
+                f"""
+                UPDATE rag_change_patches
+                SET proposed_content = {marker}, diff_text = {marker}, payload_json = {marker}, updated_at = {marker}
+                WHERE id = {marker}
+                """,
+                (clean_content, diff, _safe_json(payload), _now(), patch_id),
+            )
+            _record_event(
+                conn,
+                settings,
+                str(patch["proposal_id"]),
+                "patch_saved",
+                "Diff editado e salvo para revisao.",
+                {"patch_id": patch_id, "document_id": patch.get("document_id")},
+            )
+            proposal = _hydrate_proposal(conn, settings, str(patch["proposal_id"]))
+            if proposal:
+                proposal["saved_patch_id"] = patch_id
+            return proposal or {"id": str(patch["proposal_id"]), "saved_patch_id": patch_id}
 
 
 def get_patch(settings: Settings, patch_id: str) -> Optional[Dict[str, Any]]:

@@ -272,6 +272,11 @@ class RagStudioDocumentsRequest(BaseModel):
 
 class RagStudioPatchRequest(BaseModel):
     instruction: str
+    current_content_snapshot: Optional[str] = None
+
+
+class RagStudioPatchEditRequest(BaseModel):
+    proposed_content: str
 
 
 class RagStudioArchiveRequest(BaseModel):
@@ -1596,7 +1601,12 @@ def admin_rag_studio_delete_context_document(context_id: str, request: Request):
 def admin_rag_studio_generate_patch(document_id: str, payload: RagStudioPatchRequest, request: Request):
     settings = _settings()
     user = _require_admin(request, settings)
-    proposal = rag_studio.generate_patch(settings, document_id, payload.instruction)
+    proposal = rag_studio.generate_patch(
+        settings,
+        document_id,
+        payload.instruction,
+        current_content_snapshot=payload.current_content_snapshot,
+    )
     log_event(
         settings,
         "admin_rag_studio_patch_generate",
@@ -1604,6 +1614,22 @@ def admin_rag_studio_generate_patch(document_id: str, payload: RagStudioPatchReq
         session_id=user.login,
         actor_type="admin",
         payload={"document_id": document_id, "proposal_id": proposal.get("id")},
+    )
+    return proposal
+
+
+@router.post("/rag-studio/patches/{patch_id}/edit")
+def admin_rag_studio_edit_patch(patch_id: str, payload: RagStudioPatchEditRequest, request: Request):
+    settings = _settings()
+    user = _require_admin(request, settings)
+    proposal = rag_studio.edit_patch_content(settings, patch_id, payload.proposed_content)
+    log_event(
+        settings,
+        "admin_rag_studio_patch_edit",
+        request=request,
+        session_id=user.login,
+        actor_type="admin",
+        payload={"patch_id": patch_id, "proposal_id": proposal.get("id")},
     )
     return proposal
 

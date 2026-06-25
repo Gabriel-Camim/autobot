@@ -38,6 +38,25 @@ def _safe_metadata(metadata: Dict[str, Any]) -> str:
     return json.dumps(metadata, ensure_ascii=False, separators=(",", ":"), default=str)
 
 
+def _embedding_error(exc: Exception) -> Dict[str, str]:
+    raw = str(exc)
+    lower = raw.lower()
+    if "insufficient_quota" in lower or "exceeded your current quota" in lower:
+        return {
+            "code": "embedding_quota_exceeded",
+            "message": "A cota da OpenAI para embeddings acabou. Nao consegui indexar o contexto privado agora.",
+        }
+    if "rate limit" in lower or "ratelimit" in lower or "429" in lower:
+        return {
+            "code": "embedding_rate_limited",
+            "message": "A OpenAI limitou temporariamente embeddings. Tente indexar o contexto novamente em instantes.",
+        }
+    return {
+        "code": "context_embedding_failed",
+        "message": raw[:240] or "Nao consegui gerar embeddings para o contexto privado.",
+    }
+
+
 def ensure_context_schema(settings: Settings) -> None:
     if not uses_pgvector(settings):
         return
@@ -88,7 +107,11 @@ def index_context_document(settings: Settings, document: Dict[str, Any]) -> Dict
     splitter = RecursiveCharacterTextSplitter(chunk_size=900, chunk_overlap=120)
     chunks = splitter.split_text(text)
     embeddings = OpenAIEmbeddings(model=settings.openai_embedding_model, api_key=settings.openai_api_key)
-    vectors = embeddings.embed_documents(chunks)
+    try:
+        vectors = embeddings.embed_documents(chunks)
+    except Exception as exc:
+        error = _embedding_error(exc)
+        return {"indexed": False, "chunks": 0, "error": error["message"], "code": error["code"]}
     if vectors and len(vectors[0]) != int(settings.pgvector_dimension):
         raise RuntimeError(
             f"Dimensao do embedding ({len(vectors[0])}) difere de PGVECTOR_DIMENSION={settings.pgvector_dimension}."
@@ -149,7 +172,10 @@ def search_context_documents(settings: Settings, proposal_id: str, query: str, l
         return []
     ensure_context_schema(settings)
     embeddings = OpenAIEmbeddings(model=settings.openai_embedding_model, api_key=settings.openai_api_key)
-    query_vector = embeddings.embed_query(query)
+    try:
+        query_vector = embeddings.embed_query(query)
+    except Exception:
+        return []
     if len(query_vector) != int(settings.pgvector_dimension):
         raise RuntimeError(
             f"Dimensao da query ({len(query_vector)}) difere de PGVECTOR_DIMENSION={settings.pgvector_dimension}."

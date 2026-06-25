@@ -698,6 +698,25 @@ def settings_like_vector_ceiling(vector_score: float) -> float:
     return 1.8 - min(vector_score, 1.8)
 
 
+def _retrieval_error_payload(exc: Exception) -> Dict[str, str]:
+    raw = str(exc)
+    lower = raw.lower()
+    if "insufficient_quota" in lower or "exceeded your current quota" in lower:
+        return {
+            "code": "embedding_quota_exceeded",
+            "message": "A cota da OpenAI para embeddings acabou. Usei fallback lexical quando possivel.",
+        }
+    if "rate limit" in lower or "ratelimit" in lower or "429" in lower:
+        return {
+            "code": "embedding_rate_limited",
+            "message": "A OpenAI limitou temporariamente embeddings. Usei fallback lexical quando possivel.",
+        }
+    return {
+        "code": "vector_retrieval_failed",
+        "message": raw[:240] or "A busca vetorial falhou. Usei fallback lexical quando possivel.",
+    }
+
+
 def _cached_public_documents(settings: Settings) -> List[Document]:
     from ingest import load_public_documents
 
@@ -815,16 +834,19 @@ def _retrieve_documents_with_trace(
         query_variants.insert(0, retrieval_query)
     query_variants = query_variants[:8]
     per_vector_limit = vector_limit if len(query_variants) == 1 else max(settings.rag_k * 2, 12)
-    if uses_pgvector(settings):
-        _ensure_vector_index_ready(settings)
-        docs_with_scores = []
-        for query_variant in query_variants:
-            docs_with_scores.extend(pgvector_similarity_search(settings, query_variant, per_vector_limit, assume_ready=True))
-    else:
-        vectorstore = _build_vectorstore(settings)
-        docs_with_scores = []
-        for query_variant in query_variants:
-            docs_with_scores.extend(vectorstore.similarity_search_with_score(query_variant, k=per_vector_limit))
+    docs_with_scores: List[Tuple[Document, float]] = []
+    vector_error: Optional[Dict[str, str]] = None
+    try:
+        if uses_pgvector(settings):
+            _ensure_vector_index_ready(settings)
+            for query_variant in query_variants:
+                docs_with_scores.extend(pgvector_similarity_search(settings, query_variant, per_vector_limit, assume_ready=True))
+        else:
+            vectorstore = _build_vectorstore(settings)
+            for query_variant in query_variants:
+                docs_with_scores.extend(vectorstore.similarity_search_with_score(query_variant, k=per_vector_limit))
+    except Exception as exc:
+        vector_error = _retrieval_error_payload(exc)
     candidates: List[Tuple[Document, float, str, float]] = []
     channels_by_key: Dict[str, set[str]] = {}
     best_distance_by_key: Dict[str, float] = {}
@@ -933,6 +955,7 @@ def _retrieve_documents_with_trace(
             {**candidate, "selected": str(candidate.get("id")) in selected_ids}
             for candidate in candidates_after[:32]
         ],
+        "vector_error": vector_error,
         "rerank": {
             "enabled": settings.rag_rerank_enabled,
             "provider": settings.rag_rerank_provider,
@@ -970,6 +993,7 @@ def build_rag_probe(settings: Settings, question: str, active_context: Optional[
         "documents": len(docs_with_scores),
         "took_ms": took_ms,
         "candidate_count": trace.get("candidate_count", 0),
+        "vector_error": trace.get("vector_error"),
         "rerank": trace.get("rerank", {}),
         "candidates_before_rerank": trace.get("candidates_before_rerank", []),
         "candidates_after_rerank": trace.get("candidates_after_rerank", []),
