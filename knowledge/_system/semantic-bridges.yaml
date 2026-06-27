@@ -1,0 +1,219 @@
+version: 1
+description: >
+  Pontes semanticas de recuperacao. Este arquivo nao e fonte publica do agente;
+  ele orienta expansao de consulta, boost de fontes e rastreabilidade no RAG.
+concepts:
+  - id: trajetoria_ia
+    label: Trajetoria em IA, dados e automacoes
+    aliases:
+      - trajetoria
+      - trajetória
+      - trajetoria ia
+      - trajetória ia
+      - carreira em ia
+      - caminho em dados
+      - transicao para dados
+      - transição para dados
+      - percurso profissional
+    expansion_terms:
+      - trajetória em IA
+      - dados
+      - automações
+      - sistemas
+      - projetos autorais
+      - formação técnica
+      - experiência prática
+    target_sources:
+      - trajetoria/linha-do-tempo.md
+      - experiencia/experiencias-profissionais.md
+      - skills/dados-ia-automacoes-sistemas.md
+      - gabriel/forma-de-pensar.md
+      - inbox/2026-06-21-trajet-ria-ia.md
+    active_contexts:
+      - gabriel
+      - trajetoria
+      - experiencia
+    priority_boost: 7.0
+
+  - id: stack_dados_ia
+    label: Stack tecnica de dados, IA e automacao
+    aliases:
+      - stack
+      - hard skills
+      - tecnologias
+      - ferramentas
+      - competências técnicas
+      - skills técnicas
+    expansion_terms:
+      - Python
+      - FastAPI
+      - LangChain
+      - pgvector
+      - PostgreSQL
+      - RAG
+      - automação
+      - sistemas
+    target_sources:
+      - skills/stack-tecnico.md
+      - skills/hard-skills.md
+      - skills/dados-ia-automacoes-sistemas.md
+    active_contexts:
+      - stack
+      - gabriel
+    priority_boost: 6.5
+
+  - id: projeto_autobot
+    label: Autobot e agente de portfolio
+    aliases:
+      - autobot
+      - agente de portfolio
+      - agente pessoal
+      - agente rag
+      - portfolio interativo
+      - portfólio interativo
+    expansion_terms:
+      - RAG
+      - pgvector
+      - FastAPI
+      - React
+      - painel admin
+      - automação inteligente
+    target_sources:
+      - projetos/autobot/overview.md
+      - reports/projetos.md
+      - skills/dados-ia-automacoes-sistemas.md
+    active_contexts:
+      - projetos
+      - gabriel
+    priority_boost: 7.0
+
+  - id: projeto_dge
+    label: DGE e inteligencia operacional
+    aliases:
+      - dge
+      - inteligencia operacional
+      - inteligência operacional
+      - galpao
+      - galpão
+      - erp
+      - ecommerce operacional
+    expansion_terms:
+      - arquitetura tecnico executiva
+      - BI semantico
+      - operacional command center
+      - automations backbone
+      - PostgreSQL
+      - projeção operacional
+    target_sources:
+      - projetos/dge/overview.md
+      - projetos/dge/arquitetura.md
+      - projetos/dge/inteligencia-operacional.md
+      - projetos/dge/imported/docs-architecture-dge-2-0-blueprint-md.md
+      - projetos/dge/imported/docs-architecture-dge-2-0-operational-command-center-md.md
+    active_contexts:
+      - projetos
+      - mercado
+    priority_boost: 6.5
+
+  - id: projeto_ebook_generator
+    label: Ebook Generator
+    aliases:
+      - ebook generator
+      - ebookgenerator
+      - gerador de ebook
+      - gerador de e-book
+      - criação de ebook
+    expansion_terms:
+      - automação editorial
+      - geração de conteúdo
+      - pipeline
+      - prompts
+      - produto autoral
+    target_sources:
+      - projetos/ebookgenerator/overview.md
+      - reports/projetos.md
+    active_contexts:
+      - projetos
+    priority_boost: 6.0
+
+  - id: projetos_veterinaria
+    label: Projetos de veterinaria, Diagnosia, VetDex e VDC
+    aliases:
+      - veterinaria
+      - veterinária
+      - vetdex
+      - vdc
+      - diagnosia
+      - medicina veterinaria
+      - medicina veterinária
+      - classificacao de doencas
+      - classificação de doenças
+    expansion_terms:
+      - IA aplicada a veterinária
+      - classificação de doenças
+      - base clínica
+      - VetDex
+      - VDC
+      - Diagnosia
+    target_sources:
+      - projetos/veterinaria/overview.md
+      - projetos/veterinaria/diagnosia.md
+      - projetos/veterinaria/vetdex.md
+      - projetos/veterinaria/vdc.md
+      - projetos/veterinaria/cortex-digital.md
+    active_contexts:
+      - projetos
+      - experiencia
+    priority_boost: 6.0
+
+  - id: limitacoes_honestas
+    label: Limites tecnicos e lacunas honestas
+    aliases:
+      - limitações
+      - limitacoes
+      - lacunas
+      - pontos fracos
+      - o que nao sabe
+      - o que não sabe
+      - fraquezas tecnicas
+    expansion_terms:
+      - limitações técnicas
+      - aprendizados
+      - honestidade
+      - lacunas atuais
+    target_sources:
+      - gabriel/limitacoes-tecnicas.md
+      - entrevista/faq.md
+      - experiencia/desafios-relevantes.md
+    active_contexts:
+      - gabriel
+      - entrevista
+    priority_boost: 6.0
+
+  - id: projetos_autorais
+    label: Projetos autorais e forma de construir
+    aliases:
+      - projetos autorais
+      - projetos próprios
+      - projetos proprios
+      - produtos autorais
+      - coisas que construiu
+      - sistemas que construiu
+    expansion_terms:
+      - Autobot
+      - DGE
+      - Ebook Generator
+      - VetDex
+      - produto real
+      - automação
+      - RAG
+    target_sources:
+      - projetos/autobot/overview.md
+      - projetos/dge/overview.md
+      - projetos/ebookgenerator/overview.md
+      - projetos/veterinaria/overview.md
+      - reports/projetos.md
+    active_contexts:
+      - projetos
+      - gabriel
+    priority_boost: 6.0

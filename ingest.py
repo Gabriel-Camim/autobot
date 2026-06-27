@@ -44,7 +44,12 @@ def _parse_frontmatter(raw: str) -> Tuple[Dict, str]:
 
 
 def _iter_markdown_files(knowledge_dir: Path) -> Iterable[Path]:
-    return sorted(path for path in knowledge_dir.rglob("*.md") if path.is_file())
+    return sorted(
+        path
+        for path in knowledge_dir.rglob("*.md")
+        if path.is_file()
+        and not {"_drafts", "_context", "_system"} & set(path.relative_to(knowledge_dir).parts)
+    )
 
 
 def load_public_documents(settings: Settings) -> List[Document]:

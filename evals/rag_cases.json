@@ -1,0 +1,70 @@
+[
+  {
+    "id": "hard-skills-sem-frameworks-inventados",
+    "question": "Quais são minhas hard skills?",
+    "active_context": "stack",
+    "expected_sources": [
+      "skills/hard-skills.md",
+      "skills/stack-tecnico.md"
+    ],
+    "forbidden_terms": [
+      "PyTorch",
+      "TensorFlow"
+    ],
+    "min_docs": 2
+  },
+  {
+    "id": "stack-de-projetos-cruza-dge-e-ebook",
+    "question": "E a stack de outros projetos, tipo Ebook Generator e DGE?",
+    "active_context": "gabriel",
+    "expected_sources": [
+      "projetos/ebookgenerator/overview.md",
+      "projetos/dge/overview.md"
+    ],
+    "forbidden_terms": [],
+    "min_docs": 2
+  },
+  {
+    "id": "dge-arquitetura",
+    "question": "Explique a arquitetura do DGE.",
+    "active_context": "projetos",
+    "expected_sources": [
+      "projetos/dge/arquitetura.md"
+    ],
+    "forbidden_terms": [],
+    "min_docs": 2
+  },
+  {
+    "id": "limitacoes-tecnicas",
+    "question": "Quais limitações técnicas eu assumo com honestidade?",
+    "active_context": "gabriel",
+    "expected_sources": [
+      "gabriel/limitacoes-tecnicas.md"
+    ],
+    "forbidden_terms": [],
+    "min_docs": 1
+  },
+  {
+    "id": "veterinaria-projetos",
+    "question": "Quais projetos de veterinária aparecem na minha base?",
+    "active_context": "projetos",
+    "expected_sources": [
+      "projetos/veterinaria"
+    ],
+    "forbidden_terms": [],
+    "min_docs": 2
+  },
+  {
+    "id": "suggestion-8b2b1ead",
+    "question": "trajetória ia",
+    "active_context": "gabriel",
+    "expected_sources": [
+      "trajetoria/formacao-academica.md",
+      "trajetoria/formacao-academica.md",
+      "gabriel/perfil.md",
+      "skills/dados-ia-automacoes-sistemas.md"
+    ],
+    "forbidden_terms": [],
+    "min_docs": 1
+  }
+]

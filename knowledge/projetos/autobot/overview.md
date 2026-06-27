@@ -8,10 +8,12 @@ tags:
 - fastapi
 - react
 - langchain
-- chroma
+- postgresql
+- pgvector
+- webrtc
 visibility: public
 priority: 1
-updated_at: '2026-06-09'
+updated_at: '2026-06-27'
 summary: Projeto do portfólio conversacional com RAG, voz, relatórios estáticos e
   pacote recrutador.
 ---
@@ -20,18 +22,19 @@ summary: Projeto do portfólio conversacional com RAG, voz, relatórios estátic
 
 Autobot é o projeto deste portfólio conversacional: um agente pessoal que simula uma entrevista comigo para recrutadores, respondendo em primeira pessoa com base em uma base Markdown pública e curada.
 
-## Stack
+## Stack e Arquitetura
 
-- Backend em Python, FastAPI e LangChain.
-- Banco vetorial ChromaDB local.
-- OpenAI API para chat, embeddings, Whisper e TTS.
-- Frontend em React/Vite.
-- Interface com mapa mental, chat, voz opcional, relatórios por nó, galeria pessoal e botão Extrair Gabriel.
+- Backend em Python, FastAPI e LangChain para orquestração de agente multimodal.
+- PostgreSQL como banco relacional, com pgVector para armazenamento e busca vetorial.
+- Text-embedding-3-large para conversão vetorial de documentos e consultas.
+- GPT Realtime 2 com WebRTC para agentes conversacionais de voz em tempo real.
+- Gpt-4o-mini-tts para conversão de texto em voz.
+- OpenAI API com uso dos modelos disponíveis conforme a necessidade do fluxo, sem fixar um único modelo específico de LLM para chat.
+- Frontend em Vite + React.
+- Deploy de frontend em Vercel, backend Python em Render e database em PostgreSQL.
+- Base de dados textual em MD com versionamento Git.
+- Ciclo automatizado para avaliação de respostas com feedback loop, curadoria RAG, seleção de documentos por proximidade semântica e distância vetorial, injeção de documentos externos convertidos em embeddings no banco vetorial relacionados por pontes semânticas ao contexto da curadoria, prompt para sugestão de mudança na base de dados, edição e avaliação de diff gerado por IA, alteração canônica versionada via Git e reindexação RAG para aplicação canônica das mudanças no agente.
 
-## Decisões de produto
+## Desenvolvimento e arquitetura AI First
 
-O projeto separa conteúdo editorial público da lógica do agente. Os Markdown ficam em `/knowledge`, a ingestão é manual, o Chroma é recriado de forma limpa e o frontend mostra respostas sem poluir a UI com fontes. Há relatórios estáticos por nó para consulta rápida sem gastar token.
-
-## O que o projeto demonstra
-
-Autobot mostra capacidade de arquitetar uma aplicação full stack com IA, RAG, UX, tratamento de erro, voz, segurança de chave, API REST, pacotes de download e deploy planejado. Também mostra uma preocupação importante: quando o agente não tem contexto suficiente, ele deve admitir limite em vez de inventar.
+O desenvolvimento segue uma abordagem AI First, com frontend em Vite + React, backend em Python, REST API e FastAPI, banco de dados em PostgreSQL, versionamento Git e metodologias ágeis para evolução do produto.
